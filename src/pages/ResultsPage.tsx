@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import { Button } from '../components/ui/Button'
@@ -12,12 +12,16 @@ import { GameHistoryRepository } from '../repositories/GameHistoryRepository'
 import { generateInsights, type AttemptSample } from '../game-engine/performance'
 import { ACHIEVEMENTS } from '../game-engine/achievements'
 import { AdFrequencyManager } from '../services/AdFrequencyManager'
-import type { GameConfig, ScoreBreakdown } from '../game-engine/types'
+import { computeReactionStats, classifyMistakes, describeMistakePattern } from '../game-engine/analysis'
+import { buildOneMoreRunMessage } from '../game-engine/motivation'
+import { TARGET_HUNT_COUNT } from '../game-engine/objectives'
+import type { GameConfig, ScoreBreakdown, SelectionEvent } from '../game-engine/types'
 import type { GhostRunRecord } from '../data/db'
 import type { ThunderRewardBreakdown } from '../game-engine/thunder'
 
 interface ResultsState {
   score: ScoreBreakdown
+  events: SelectionEvent[]
   isNewPersonalBest: boolean
   previousBest: number | null
   streak: { current: number; longest: number }
@@ -26,6 +30,8 @@ interface ResultsState {
   progressionLevel: string
   config: GameConfig
   ghost: GhostRunRecord | null
+  ghostWasEverAhead: boolean
+  ghostLeadLostAtMs: number | null
 }
 
 export function ResultsPage() {
@@ -54,13 +60,32 @@ export function ResultsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  const reactionStats = useMemo(() => (state ? computeReactionStats(state.events) : null), [state])
+  const mistakeBreakdown = useMemo(() => (state ? classifyMistakes(state.events) : null), [state])
+  const mistakePattern = mistakeBreakdown ? describeMistakePattern(mistakeBreakdown) : null
+
+  const oneMoreRun = useMemo(() => {
+    if (!state) return null
+    return buildOneMoreRunMessage({
+      finalScore: state.score.finalScore,
+      previousBest: state.previousBest,
+      isPersonalBest: state.isNewPersonalBest,
+      correctCount: state.score.correctCount,
+      totalTargets: state.config.objective === 'target-hunt' ? TARGET_HUNT_COUNT : undefined,
+      ghostWasEverAhead: state.ghostWasEverAhead,
+      ghostLeadLostAtMs: state.ghostLeadLostAtMs,
+      durationMs: state.config.durationSeconds * 1000,
+    })
+  }, [state])
+
   if (!state) {
     navigate('/', { replace: true })
     return null
   }
 
-  const { score, isNewPersonalBest, thunderReward, newlyUnlockedAchievements, config, ghost } = state
+  const { score, isNewPersonalBest, previousBest, thunderReward, newlyUnlockedAchievements, config, ghost } = state
   const ghostDelta = ghost ? score.finalScore - ghost.finalScore : null
+  const improvementPct = isNewPersonalBest && previousBest ? Math.round(((score.finalScore - previousBest) / previousBest) * 100) : null
 
   const handleHome = async () => {
     const eligible = await AdFrequencyManager.checkInterstitialEligibility()
@@ -79,15 +104,27 @@ export function ResultsPage() {
 
   return (
     <div className="flex flex-col items-center gap-6 text-center">
-      {isNewPersonalBest && (
+      {isNewPersonalBest ? (
         <motion.div
           initial={{ opacity: 0, scale: 0.8, y: -8 }}
           animate={{ opacity: 1, scale: 1, y: 0 }}
           transition={{ type: 'spring', stiffness: 260, damping: 16 }}
           className="rounded-full bg-thunder-500/15 px-4 py-1 text-xs font-bold uppercase tracking-wider text-thunder-400"
         >
-          New Personal Best
+          ⚡ New Personal Best
         </motion.div>
+      ) : (
+        oneMoreRun && (
+          <motion.div
+            initial={{ opacity: 0, y: -6 }}
+            animate={{ opacity: 1, y: 0 }}
+            className={`rounded-full px-4 py-1 text-xs font-bold uppercase tracking-wider ${
+              oneMoreRun.isNearMiss ? 'bg-danger-500/15 text-danger-500' : 'bg-ink-800 text-ink-300'
+            }`}
+          >
+            {oneMoreRun.headline}
+          </motion.div>
+        )
       )}
 
       <motion.div
@@ -98,6 +135,15 @@ export function ResultsPage() {
       >
         {score.finalScore.toLocaleString()}
       </motion.div>
+
+      {isNewPersonalBest && previousBest != null && (
+        <div className="flex items-center gap-4 text-sm">
+          <span className="text-ink-400">
+            Previous <span className="text-ink-200">{previousBest.toLocaleString()}</span>
+          </span>
+          {improvementPct != null && <span className="font-bold text-volt-400">+{improvementPct}%</span>}
+        </div>
+      )}
 
       {ghostDelta != null && (
         <div className={`text-sm font-semibold ${ghostDelta >= 0 ? 'text-volt-400' : 'text-danger-500'}`}>
@@ -127,6 +173,19 @@ export function ResultsPage() {
           <StatTile label="Best Combo" value={`×${score.bestCombo}`} />
           <StatTile label="Final Score" value={score.finalScore.toLocaleString()} accent />
         </div>
+        {reactionStats && reactionStats.fastestMs > 0 && (
+          <div className="mt-3 flex justify-between border-t border-ink-800 pt-3 text-xs text-ink-400">
+            <span>
+              Fastest <span className="font-semibold text-ink-200">{(reactionStats.fastestMs / 1000).toFixed(2)}s</span>
+            </span>
+            <span>
+              Median <span className="font-semibold text-ink-200">{(reactionStats.medianMs / 1000).toFixed(2)}s</span>
+            </span>
+            <span>
+              Slowest <span className="font-semibold text-ink-200">{(reactionStats.slowestMs / 1000).toFixed(2)}s</span>
+            </span>
+          </div>
+        )}
       </Card>
 
       <Card className="w-full text-left font-mono text-sm">
@@ -138,6 +197,13 @@ export function ResultsPage() {
         <div className="my-2 border-t border-ink-700" />
         <Row label="FINAL SCORE" value={score.finalScore} bold />
       </Card>
+
+      {mistakePattern && (
+        <Card className="w-full border-thunder-500/20 text-left">
+          <div className="mb-1 text-xs font-semibold uppercase tracking-wider text-ink-300">What Cost You Points</div>
+          <p className="text-sm text-ink-200">{mistakePattern}</p>
+        </Card>
+      )}
 
       <Card className="w-full text-left">
         <div className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-thunder-400">

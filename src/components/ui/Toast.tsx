@@ -35,7 +35,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
               exit={{ opacity: 0, y: -8, scale: 0.95 }}
               className={`rounded-xl border px-4 py-2 text-sm font-semibold shadow-lg backdrop-blur ${
                 t.tone === 'success'
-                  ? 'border-volt-500/40 bg-volt-500/15 text-focus-300'
+                  ? 'border-volt-500/40 bg-volt-500/15 text-volt-300'
                   : t.tone === 'error'
                     ? 'border-danger-500/40 bg-danger-500/15 text-danger-500'
                     : 'border-ink-600 bg-ink-800/90 text-ink-100'

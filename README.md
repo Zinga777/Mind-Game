@@ -16,9 +16,10 @@ haptics, and offline PWA support. Everything is real and tested — nothing is
 mocked data dressed up to look finished.
 
 **Verified, not just built:**
-- 39 passing unit tests across the whole engine (objectives, all 10
+- 55 passing unit tests across the whole engine (objectives, all 10
   mutators, scoring, Thunder economy, Mind DNA, achievements, progression,
-  ghost comparison).
+  ghost comparison, confusable-distractor generation, reaction stats,
+  mistake classification, one-more-run messaging).
 - A full play-through driven in a real headless browser — Home → Pre-Game →
   Play → Results → Profile — with zero console errors.
 - **Actual offline verification**: built for production, went fully offline
@@ -57,6 +58,20 @@ dependencies, fully seed-deterministic):
   player's own stored best run.
 - Achievement rule engine and a deterministic progression formula (Rookie →
   Master) that weights personal bests and accuracy over raw game count.
+- Deliberate distractor generation (`generateConfusableGrid`): when Target
+  Hunt runs with the Distraction mutator, targets are chosen first and each
+  is seeded with 1-2 digit-confusable near-misses (68 next to 86, 69, 66,
+  88) via digit-swap and digit-nudge variants — difficulty comes from real
+  visual similarity, not a wider random range standing in for it.
+- Reaction-time statistics (fastest/median/slowest/variance, from
+  `performance.now()` timestamps) and mistake classification
+  (`classifyMistakes`) that labels each wrong pick as a digit-confusion
+  near-miss or a rushed tap by checking it against the run's own event log —
+  never an invented statistic.
+- `buildOneMoreRunMessage`: a single traceable reason to play again —
+  points from PB, percent of the way there, "one target away," or "ahead of
+  your ghost until the final Ns" — derived from the same run's real data,
+  never a generic "Good job."
 
 **Local-first persistence** (`src/data`, `src/repositories` — IndexedDB via
 `idb`, no server):

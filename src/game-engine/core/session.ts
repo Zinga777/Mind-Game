@@ -1,7 +1,7 @@
 import type { CellVisualState, GameConfig, GameSessionState, GridCell } from '../types'
-import { generateGrid, mirrorGridValues, reshuffleGrid, rotateGridValues, swapCellValues } from './gridGenerator'
+import { generateConfusableGrid, generateGrid, mirrorGridValues, reshuffleGrid, rotateGridValues, swapCellValues } from './gridGenerator'
 import { SeededRng } from './rng'
-import { createObjectiveState, isRevealPhase, tickMemoryReveal, tickObjective, validateSelection } from '../objectives'
+import { createObjectiveState, isRevealPhase, tickMemoryReveal, tickObjective, validateSelection, TARGET_HUNT_COUNT } from '../objectives'
 import { resolveMutatorRuntime, validateMutatorCombo } from '../mutators'
 
 /**
@@ -13,9 +13,21 @@ export function createSession(config: GameConfig, nowMs: number): GameSessionSta
   if (!combo.valid) throw new Error(combo.reason)
 
   const rng = new SeededRng(config.seed)
-  const cells = generateGrid(config, rng)
+
+  // Target Hunt + Distraction gets a grid built around deliberately
+  // confusable near-misses (68/86/69/66/88) rather than just a wider random
+  // range — difficulty from genuine visual similarity, not just density.
+  const useConfusableGrid = config.objective === 'target-hunt' && config.mutators.includes('distraction')
+  const { cells, explicitTargets } = useConfusableGrid
+    ? (() => {
+        const result = generateConfusableGrid(config, rng, TARGET_HUNT_COUNT)
+        return { cells: result.cells, explicitTargets: result.targets }
+      })()
+    : { cells: generateGrid(config, rng), explicitTargets: undefined }
+
   const { state: objective, prompt } = createObjectiveState(config.objective, cells, rng, {
     rulePhases: config.rulePhases,
+    explicitTargets,
   })
 
   const cellVisualState: Record<string, CellVisualState> = {}

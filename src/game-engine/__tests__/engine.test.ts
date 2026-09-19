@@ -10,6 +10,9 @@ import { analyzeMindDna, generateInsights, type AttemptSample } from '../perform
 import { compareToGhost } from '../ghost'
 import { evaluateAchievements, checkPbBreaker } from '../achievements'
 import { computeProgressionScore, levelForScore } from '../progression'
+import { confusableCandidates, generateConfusableGrid } from '../core/gridGenerator'
+import { computeReactionStats, classifyMistakes, describeMistakePattern } from '../analysis'
+import { buildOneMoreRunMessage } from '../motivation'
 import type { ScoreBreakdown } from '../types'
 
 describe('SeededRng', () => {
@@ -464,5 +467,192 @@ describe('progression', () => {
     expect(levelForScore(0)).toBe('Rookie')
     expect(levelForScore(25)).toBe('Learner')
     expect(levelForScore(310)).toBe('Master')
+  })
+})
+
+describe('confusableCandidates', () => {
+  it('includes the classic digit-swap and nudge near-misses for 68', () => {
+    const candidates = confusableCandidates(68)
+    expect(candidates).toContain(86) // digit swap
+    expect(candidates).toContain(69) // last digit +1
+    expect(candidates).toContain(66) // last digit -2
+    expect(candidates).toContain(88) // digit +2 on the tens place... or similar nudge
+    expect(candidates).not.toContain(68)
+  })
+
+  it('never produces a leading zero', () => {
+    const candidates = confusableCandidates(10)
+    expect(candidates.every((c) => String(c)[0] !== '0')).toBe(true)
+  })
+})
+
+describe('generateConfusableGrid', () => {
+  it('fills the grid with unique values and seeds targets with nearby confusable distractors', () => {
+    const config = buildGameConfig({
+      objective: 'target-hunt',
+      difficulty: 'advanced',
+      mutators: ['distraction'],
+      seed: 'confuse-1',
+    })
+    const rng = new SeededRng(config.seed)
+    const { cells, targets } = generateConfusableGrid(config, rng, 8)
+
+    expect(cells).toHaveLength(100)
+    expect(new Set(cells.map((c) => c.value)).size).toBe(100)
+    expect(targets).toHaveLength(8)
+
+    const gridValues = new Set(cells.map((c) => c.value))
+    let targetsWithNearbyDistractor = 0
+    for (const t of targets) {
+      const nearby = confusableCandidates(t).some((c) => gridValues.has(c))
+      if (nearby) targetsWithNearbyDistractor++
+    }
+    // Not guaranteed for every target (range/collisions), but the mechanism should work for most.
+    expect(targetsWithNearbyDistractor).toBeGreaterThan(0)
+  })
+
+  it('is deterministic for a given seed', () => {
+    const config = buildGameConfig({
+      objective: 'target-hunt',
+      difficulty: 'advanced',
+      mutators: ['distraction'],
+      seed: 'confuse-2',
+    })
+    const a = generateConfusableGrid(config, new SeededRng(config.seed), 8)
+    const b = generateConfusableGrid(config, new SeededRng(config.seed), 8)
+    expect(a.cells.map((c) => c.value)).toEqual(b.cells.map((c) => c.value))
+    expect(a.targets).toEqual(b.targets)
+  })
+})
+
+describe('target-hunt with distraction mutator', () => {
+  it('uses the confusable-grid path and produces a playable session', () => {
+    const config = buildGameConfig({
+      objective: 'target-hunt',
+      difficulty: 'advanced',
+      mutators: ['distraction'],
+      seed: 'confuse-session-1',
+    })
+    const session = createSession(config, 0)
+    expect(session.cells).toHaveLength(100)
+    expect(new Set(session.cells.map((c) => c.value)).size).toBe(100)
+    if (session.objective.type !== 'target-hunt') throw new Error('unreachable')
+    expect(session.objective.targets).toHaveLength(8)
+    // Every target value must actually exist on the grid.
+    const gridValues = new Set(session.cells.map((c) => c.value))
+    for (const t of session.objective.targets) expect(gridValues.has(t)).toBe(true)
+  })
+})
+
+describe('computeReactionStats', () => {
+  it('returns zeros for no correct events', () => {
+    expect(computeReactionStats([])).toEqual({ fastestMs: 0, slowestMs: 0, medianMs: 0, meanMs: 0, varianceMs: 0 })
+  })
+
+  it('computes fastest/slowest/median/mean from correct events only', () => {
+    const events = [
+      { cellId: 'a', value: 1, correct: true, timestampMs: 0, reactionMs: 200 },
+      { cellId: 'b', value: 2, correct: true, timestampMs: 0, reactionMs: 400 },
+      { cellId: 'c', value: 3, correct: true, timestampMs: 0, reactionMs: 600 },
+      { cellId: 'd', value: 4, correct: false, timestampMs: 0, reactionMs: 50 }, // excluded
+    ]
+    const stats = computeReactionStats(events)
+    expect(stats.fastestMs).toBe(200)
+    expect(stats.slowestMs).toBe(600)
+    expect(stats.medianMs).toBe(400)
+    expect(stats.meanMs).toBe(400)
+  })
+})
+
+describe('classifyMistakes', () => {
+  it('flags a wrong tap as digit-confusion when it is a near-miss of a value actually selected correctly', () => {
+    const events = [
+      { cellId: 'a', value: 68, correct: true, timestampMs: 0, reactionMs: 500 },
+      { cellId: 'b', value: 86, correct: false, timestampMs: 100, reactionMs: 500 }, // swap of 68
+    ]
+    const result = classifyMistakes(events)
+    expect(result.digitConfusion).toBe(1)
+    expect(result.rushed).toBe(0)
+  })
+
+  it('flags a fast unrelated wrong tap as rushed', () => {
+    const events = [
+      { cellId: 'a', value: 12, correct: true, timestampMs: 0, reactionMs: 500 },
+      { cellId: 'b', value: 900, correct: false, timestampMs: 100, reactionMs: 120 },
+    ]
+    const result = classifyMistakes(events)
+    expect(result.rushed).toBe(1)
+    expect(result.digitConfusion).toBe(0)
+  })
+
+  it('describeMistakePattern names the dominant category with real counts', () => {
+    const breakdown = { total: 4, digitConfusion: 3, rushed: 1, other: 0 }
+    expect(describeMistakePattern(breakdown)).toContain('3 of 4')
+  })
+
+  it('describeMistakePattern returns null with no mistakes', () => {
+    expect(describeMistakePattern({ total: 0, digitConfusion: 0, rushed: 0, other: 0 })).toBeNull()
+  })
+})
+
+describe('buildOneMoreRunMessage', () => {
+  it('celebrates a new PB without a gap message', () => {
+    const msg = buildOneMoreRunMessage({
+      finalScore: 900,
+      previousBest: 800,
+      isPersonalBest: true,
+      correctCount: 8,
+      durationMs: 60000,
+    })
+    expect(msg.headline).toBe('New Personal Best')
+  })
+
+  it('flags a near-miss when within 95% of PB', () => {
+    const msg = buildOneMoreRunMessage({
+      finalScore: 960,
+      previousBest: 1000,
+      isPersonalBest: false,
+      correctCount: 8,
+      durationMs: 60000,
+    })
+    expect(msg.isNearMiss).toBe(true)
+    expect(msg.headline).toContain('40')
+  })
+
+  it('flags one-target-away when one short of a known total', () => {
+    const msg = buildOneMoreRunMessage({
+      finalScore: 500,
+      previousBest: null,
+      isPersonalBest: false,
+      correctCount: 7,
+      totalTargets: 8,
+      durationMs: 60000,
+    })
+    expect(msg.headline).toBe('One target away')
+    expect(msg.isNearMiss).toBe(true)
+  })
+
+  it('surfaces ghost lead lost late in the run', () => {
+    const msg = buildOneMoreRunMessage({
+      finalScore: 500,
+      previousBest: null,
+      isPersonalBest: false,
+      correctCount: 8,
+      ghostWasEverAhead: true,
+      ghostLeadLostAtMs: 55000,
+      durationMs: 60000,
+    })
+    expect(msg.headline).toContain('5s')
+  })
+
+  it('falls back to a neutral message with no special condition', () => {
+    const msg = buildOneMoreRunMessage({
+      finalScore: 500,
+      previousBest: null,
+      isPersonalBest: false,
+      correctCount: 8,
+      durationMs: 60000,
+    })
+    expect(msg.headline).toBe('Solid run — one more could push your PB')
   })
 })

@@ -2,6 +2,7 @@ import type { GridCell, ObjectiveResult, ObjectiveState, ObjectiveType } from '.
 import { SeededRng } from '../core/rng'
 
 const MEMORY_REVEAL_MS = 2500
+export const TARGET_HUNT_COUNT = 8
 
 function promptFor(state: ObjectiveState): string {
   switch (state.type) {
@@ -36,6 +37,8 @@ export function createObjectiveState(
     divisor?: number
     targetCount?: number
     rulePhases?: { objective: ObjectiveType; durationSeconds: number }[]
+    /** When the grid was built with deliberately-confusable distractors, the targets are already chosen — reuse them rather than re-deriving from the grid's values. */
+    explicitTargets?: number[]
   } = {},
 ): { state: ObjectiveState; prompt: string } {
   const values = cells.map((c) => c.value)
@@ -66,8 +69,8 @@ export function createObjectiveState(
       break
     }
     case 'target-hunt': {
-      const count = opts.targetCount ?? 8
-      const targets = rng.shuffle(values).slice(0, count)
+      const count = opts.targetCount ?? TARGET_HUNT_COUNT
+      const targets = opts.explicitTargets ?? rng.shuffle(values).slice(0, count)
       state = { type: 'target-hunt', targets, index: 0 }
       break
     }
