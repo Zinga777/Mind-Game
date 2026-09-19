@@ -1,0 +1,97 @@
+@import 'tailwindcss';
+
+@theme {
+  /* Mind Athlete premium dark foundation */
+  --color-ink-950: #05060a;
+  --color-ink-900: #0a0c12;
+  --color-ink-850: #10131c;
+  --color-ink-800: #151926;
+  --color-ink-700: #1d2233;
+  --color-ink-600: #2a3145;
+  --color-ink-500: #3d465e;
+  --color-ink-400: #5b6480;
+  --color-ink-300: #838ca6;
+  --color-ink-200: #b3bad0;
+  --color-ink-100: #dde1ec;
+  --color-ink-50: #f4f6fb;
+
+  /* Restrained accent: electric cyan for "focus", warm amber for reward */
+  --color-focus-500: #33e6c9;
+  --color-focus-400: #5ff2da;
+  --color-focus-600: #17bfa4;
+
+  --color-ember-500: #ffb454;
+  --color-ember-400: #ffc978;
+  --color-ember-600: #f5943a;
+
+  --color-danger-500: #ff5c6c;
+  --color-success-500: #4ade80;
+
+  --font-display: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Consolas, monospace;
+}
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--color-ink-950);
+  color: var(--color-ink-50);
+  font-family: var(--font-display);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overscroll-behavior-y: none;
+}
+
+/* Gameplay surfaces should never let the user accidentally select text,
+   zoom, or trigger the browser's context menu while training. */
+.gameplay-surface {
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-ink-600);
+  border-radius: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+@keyframes shake {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  25% {
+    transform: translateX(-3px);
+  }
+  75% {
+    transform: translateX(3px);
+  }
+}
