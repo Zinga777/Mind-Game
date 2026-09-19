@@ -1,8 +1,11 @@
-import { useMemo } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { motion } from 'framer-motion'
 import { Button } from '../components/ui/Button'
 import { Card, StatTile, Badge } from '../components/ui/Card'
-import { getProfile } from '../state/localProfileStore'
+import { Skeleton } from '../components/ui/Skeleton'
+import { useSession } from '../state/SessionContext'
+import { fetchProfile, type ProfileResponse } from '../lib/profileApi'
 import type { DifficultyLevel, ObjectiveType } from '../game-engine/types'
 
 const OBJECTIVE_CARDS: { objective: ObjectiveType; title: string; blurb: string }[] = [
@@ -21,8 +24,23 @@ function greeting(): string {
 
 export function HomePage() {
   const navigate = useNavigate()
-  const profile = useMemo(() => getProfile(), [])
-  const overallPb = Math.max(0, ...Object.values(profile.personalBests))
+  const { user } = useSession()
+  const [profile, setProfile] = useState<ProfileResponse | null>(null)
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    if (!user) return
+    let cancelled = false
+    fetchProfile()
+      .then((p) => !cancelled && setProfile(p))
+      .catch(() => {})
+      .finally(() => !cancelled && setLoading(false))
+    return () => {
+      cancelled = true
+    }
+  }, [user])
+
+  const overallPb = Math.max(0, ...Object.values(profile?.personalBests ?? {}))
 
   const start = (objective: ObjectiveType, difficulty: DifficultyLevel = 'advanced') => {
     navigate(`/pre-game?objective=${objective}&difficulty=${difficulty}`)
@@ -31,42 +49,60 @@ export function HomePage() {
   return (
     <div className="flex flex-col gap-6">
       <div>
-        <div className="text-sm text-ink-300">{greeting()}, Athlete</div>
+        <div className="text-sm text-ink-300">
+          {greeting()}, {user?.displayName ?? 'Athlete'}
+        </div>
         <h1 className="mt-1 text-2xl font-bold text-ink-50">Your brain is an athlete.</h1>
       </div>
 
       <Card>
-        <div className="grid grid-cols-3 gap-3">
-          <StatTile label="Best Score" value={overallPb.toLocaleString()} accent />
-          <StatTile label="Streak" value={`${profile.streak.current}d`} />
-          <StatTile label="Runs" value={profile.runs.length} />
-        </div>
+        {loading ? (
+          <div className="grid grid-cols-3 gap-3">
+            <Skeleton className="h-14" />
+            <Skeleton className="h-14" />
+            <Skeleton className="h-14" />
+          </div>
+        ) : (
+          <div className="grid grid-cols-3 gap-3">
+            <StatTile label="Best Score" value={overallPb.toLocaleString()} accent />
+            <StatTile label="Streak" value={`${profile?.streak.current ?? 0}d`} />
+            <StatTile label="Runs" value={profile?.totalRuns ?? 0} />
+          </div>
+        )}
       </Card>
 
-      <Button size="lg" onClick={() => start('target-hunt')} className="w-full">
-        PLAY NOW
-      </Button>
+      <motion.div whileTap={{ scale: 0.98 }}>
+        <Button size="lg" onClick={() => start('target-hunt')} className="w-full">
+          PLAY NOW
+        </Button>
+      </motion.div>
 
       <div>
         <h2 className="mb-3 text-sm font-semibold uppercase tracking-wider text-ink-300">Mind Grid Modes</h2>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          {OBJECTIVE_CARDS.map((card) => (
-            <Card
+          {OBJECTIVE_CARDS.map((card, i) => (
+            <motion.div
               key={card.objective}
-              className="cursor-pointer transition-colors hover:border-focus-500"
-              onClick={() => start(card.objective)}
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: i * 0.05 }}
             >
-              <div className="flex items-center justify-between">
-                <div className="font-semibold text-ink-50">{card.title}</div>
-                <Badge tone="focus">Grid</Badge>
-              </div>
-              <p className="mt-2 text-sm text-ink-300">{card.blurb}</p>
-              {profile.personalBests[card.objective] != null && (
-                <p className="mt-3 text-xs text-ink-400">
-                  PB <span className="font-bold text-focus-400">{profile.personalBests[card.objective]}</span>
-                </p>
-              )}
-            </Card>
+              <Card
+                className="cursor-pointer transition-colors hover:border-focus-500"
+                onClick={() => start(card.objective)}
+              >
+                <div className="flex items-center justify-between">
+                  <div className="font-semibold text-ink-50">{card.title}</div>
+                  <Badge tone="focus">Grid</Badge>
+                </div>
+                <p className="mt-2 text-sm text-ink-300">{card.blurb}</p>
+                {profile?.personalBests[card.objective] != null && (
+                  <p className="mt-3 text-xs text-ink-400">
+                    PB <span className="font-bold text-focus-400">{profile.personalBests[card.objective]}</span>
+                  </p>
+                )}
+              </Card>
+            </motion.div>
           ))}
         </div>
       </div>

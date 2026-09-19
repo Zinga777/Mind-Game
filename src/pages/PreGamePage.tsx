@@ -4,7 +4,7 @@ import { Button } from '../components/ui/Button'
 import { Card, Badge } from '../components/ui/Card'
 import { buildGameConfig, randomSeed } from '../game-engine/core/config'
 import { DIFFICULTY_PRESETS } from '../game-engine/difficulty'
-import { getProfile } from '../state/localProfileStore'
+import { fetchProfile } from '../lib/profileApi'
 import type { DifficultyLevel, MutatorType, ObjectiveType } from '../game-engine/types'
 
 const OBJECTIVE_LABEL: Record<ObjectiveType, string> = {
@@ -36,8 +36,17 @@ export function PreGamePage() {
   const [countdown, setCountdown] = useState<number | null>(null)
 
   const preset = DIFFICULTY_PRESETS[difficulty]
-  const profile = useMemo(() => getProfile(), [])
-  const pb = profile.personalBests[objective]
+  const [pb, setPb] = useState<number | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    fetchProfile()
+      .then((p) => !cancelled && setPb(p.personalBests[objective] ?? null))
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [objective])
 
   const config = useMemo(
     () => buildGameConfig({ objective, difficulty, mutators: preset.allowedMutators, seed: randomSeed() }),
