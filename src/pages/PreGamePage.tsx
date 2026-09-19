@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Button } from '../components/ui/Button'
 import { Card, Badge } from '../components/ui/Card'
@@ -43,6 +43,7 @@ export function PreGamePage() {
   const { balance, spend } = useThunder()
 
   const isDaily = params.get('daily') === 'true'
+  const quickStart = params.get('quick') === 'true'
   const objective = isDaily ? 'target-hunt' : ((params.get('objective') as ObjectiveType) ?? 'target-hunt')
   const [difficulty, setDifficulty] = useState<DifficultyLevel>(
     isDaily ? 'advanced' : ((params.get('difficulty') as DifficultyLevel) ?? 'advanced'),
@@ -95,12 +96,30 @@ export function PreGamePage() {
     setCountdown(3)
   }
 
+  // Retry from Results skips straight back into the action — re-reading the
+  // same info screen and re-tapping START is exactly the friction that kills
+  // the "one more run" instinct.
+  const autoStartedRef = useRef(false)
+  useEffect(() => {
+    if (quickStart && !autoStartedRef.current && countdown === null && !dailyAlreadyDone) {
+      autoStartedRef.current = true
+      handleStart()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [quickStart, countdown, dailyAlreadyDone])
+
   if (countdown !== null) {
     return (
       <div className="flex h-[70vh] flex-col items-center justify-center gap-2">
         <div className="text-7xl font-black tabular-nums text-volt-400">{countdown === 0 ? 'GO' : countdown}</div>
       </div>
     )
+  }
+
+  // While a quick-retry is auto-spending Thunder and about to launch the
+  // countdown, skip the flash of the full info screen — nothing to decide.
+  if (quickStart && !insufficientFunds && !dailyAlreadyDone) {
+    return <div className="h-[70vh]" />
   }
 
   return (

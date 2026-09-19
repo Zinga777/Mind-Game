@@ -62,6 +62,11 @@ export function HomePage() {
     navigate(`/pre-game?objective=${objective}&difficulty=${difficulty}`)
   }
 
+  // "PLAY NOW" should mean now — straight past the info screen into the countdown.
+  const playNow = () => {
+    navigate('/pre-game?objective=target-hunt&difficulty=advanced&quick=true')
+  }
+
   const startDaily = () => {
     navigate('/pre-game?daily=true')
   }
@@ -84,7 +89,7 @@ export function HomePage() {
       </Card>
 
       <motion.div whileTap={{ scale: 0.98 }}>
-        <Button size="lg" onClick={() => start('target-hunt')} className="w-full">
+        <Button size="lg" onClick={playNow} className="w-full">
           PLAY NOW
         </Button>
       </motion.div>

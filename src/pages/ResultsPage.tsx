@@ -151,6 +151,21 @@ export function ResultsPage() {
         </div>
       )}
 
+      {/* Primary action sits right under the score — no scrolling past a wall
+          of stats to find it. Everything below is "keep scrolling for the analysis." */}
+      <div className="flex w-full gap-3">
+        <Button
+          size="lg"
+          className="flex-[2]"
+          onClick={() => navigate(`/pre-game?objective=${config.objective}&difficulty=${config.difficulty}&quick=true`)}
+        >
+          RETRY
+        </Button>
+        <Button size="lg" variant="secondary" className="flex-1" onClick={handleHome}>
+          HOME
+        </Button>
+      </div>
+
       {newlyUnlockedAchievements.length > 0 && (
         <div className="flex flex-wrap justify-center gap-2">
           {newlyUnlockedAchievements.map((id) => {
@@ -242,19 +257,6 @@ export function ResultsPage() {
           </div>
         </Card>
       )}
-
-      <div className="flex w-full gap-3">
-        <Button
-          variant="secondary"
-          className="flex-1"
-          onClick={() => navigate(`/pre-game?objective=${config.objective}&difficulty=${config.difficulty}`)}
-        >
-          RETRY
-        </Button>
-        <Button className="flex-1" onClick={handleHome}>
-          HOME
-        </Button>
-      </div>
 
       <RewardedAdModal
         open={adOpen}

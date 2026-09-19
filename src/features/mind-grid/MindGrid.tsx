@@ -13,7 +13,7 @@ interface MindGridProps {
 const VISUAL_CLASS: Record<CellVisualState, string> = {
   idle: 'bg-ink-800 text-ink-100 border-ink-600 hover:bg-ink-700',
   selected: 'bg-ink-700 text-ink-50 border-volt-500',
-  correct: 'bg-volt-500 text-ink-950 border-volt-400 scale-[0.96]',
+  correct: 'bg-volt-500 text-ink-950 border-volt-400 shadow-[0_0_16px_-2px_var(--color-volt-glow)] animate-[cellPop_0.22s_ease-out]',
   incorrect: 'bg-danger-500/80 text-ink-950 border-danger-500 animate-[shake_0.25s_ease-in-out]',
   vanished: 'bg-transparent border-transparent text-transparent pointer-events-none',
   locked: 'bg-ink-900 text-ink-500 border-ink-800 pointer-events-none',
@@ -37,7 +37,7 @@ function MindGridCellButton({
       onClick={handleClick}
       disabled={state === 'vanished' || state === 'locked'}
       className={clsx(
-        'aspect-square w-full rounded-md border text-[clamp(10px,2.6vw,16px)] font-bold tabular-nums transition-colors duration-100',
+        'aspect-square w-full rounded-md border text-[clamp(10px,2.6vw,16px)] font-bold tabular-nums transition-colors duration-100 will-change-transform',
         VISUAL_CLASS[state],
       )}
     >
