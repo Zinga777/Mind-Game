@@ -12,8 +12,8 @@ interface MindGridProps {
 
 const VISUAL_CLASS: Record<CellVisualState, string> = {
   idle: 'bg-ink-800 text-ink-100 border-ink-600 hover:bg-ink-700',
-  selected: 'bg-ink-700 text-ink-50 border-focus-500',
-  correct: 'bg-focus-500 text-ink-950 border-focus-400 scale-[0.96]',
+  selected: 'bg-ink-700 text-ink-50 border-volt-500',
+  correct: 'bg-volt-500 text-ink-950 border-volt-400 scale-[0.96]',
   incorrect: 'bg-danger-500/80 text-ink-950 border-danger-500 animate-[shake_0.25s_ease-in-out]',
   vanished: 'bg-transparent border-transparent text-transparent pointer-events-none',
   locked: 'bg-ink-900 text-ink-500 border-ink-800 pointer-events-none',

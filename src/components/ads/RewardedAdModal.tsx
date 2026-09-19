@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { Button } from '../ui/Button'
-import { claimAdReward } from '../../lib/profileApi'
-import { ApiError } from '../../lib/api'
+import { LightningBolt } from '../brand/LightningMark'
+import { adService } from '../../services/AdService'
+import { AdFrequencyManager } from '../../services/AdFrequencyManager'
+import { DEFAULT_THUNDER_CONFIG } from '../../game-engine/thunder'
 
 const AD_DURATION_S = 5
 
@@ -10,8 +12,7 @@ const AD_DURATION_S = 5
  * No real ad network is wired up in this build — this is the AdService
  * abstraction's local "house" provider: a clearly-labeled, timed placeholder
  * that plays instead of a real creative. Swapping in a real network later
- * means implementing this same interface (show → wait for completion →
- * call the reward endpoint), not touching any caller.
+ * means implementing AdService for real, not touching any caller.
  */
 export function RewardedAdModal({
   open,
@@ -20,38 +21,40 @@ export function RewardedAdModal({
 }: {
   open: boolean
   onClose: () => void
-  onRewarded: (coins: number) => void
+  onRewarded: (thunder: number) => void
 }) {
   const [secondsLeft, setSecondsLeft] = useState(AD_DURATION_S)
-  const [state, setState] = useState<'playing' | 'claiming' | 'rewarded' | 'error'>('playing')
-  const [error, setError] = useState<string | null>(null)
-  const [rewardCoins, setRewardCoins] = useState(0)
+  const [state, setState] = useState<'playing' | 'claiming' | 'rewarded' | 'unavailable'>('playing')
 
   useEffect(() => {
     if (!open) {
       setSecondsLeft(AD_DURATION_S)
       setState('playing')
-      setError(null)
       return
     }
-    if (secondsLeft <= 0) return
+    adService.isRewardedAdAvailable().then((available) => {
+      if (!available) setState('unavailable')
+    })
+  }, [open])
+
+  useEffect(() => {
+    if (!open || state !== 'playing' || secondsLeft <= 0) return
     const t = setTimeout(() => setSecondsLeft((s) => s - 1), 1000)
     return () => clearTimeout(t)
-  }, [open, secondsLeft])
+  }, [open, secondsLeft, state])
 
   useEffect(() => {
     if (open && secondsLeft === 0 && state === 'playing') {
       setState('claiming')
-      claimAdReward('post_game_reward')
-        .then((res) => {
-          setRewardCoins(res.rewardCoins)
-          setState('rewarded')
-          onRewarded(res.rewardCoins)
-        })
-        .catch((err) => {
-          setState('error')
-          setError(err instanceof ApiError ? err.message : 'Could not reach the server')
-        })
+      adService.showRewardedThunderAd().then(async (result) => {
+        if (!result.watched) {
+          setState('unavailable')
+          return
+        }
+        await AdFrequencyManager.recordRewardedAdWatched()
+        setState('rewarded')
+        onRewarded(DEFAULT_THUNDER_CONFIG.rewardedAdAmount)
+      })
     }
   }, [open, secondsLeft, state, onRewarded])
 
@@ -76,18 +79,20 @@ export function RewardedAdModal({
             exit={{ scale: 0.92, opacity: 0 }}
             className="w-full max-w-sm rounded-2xl border border-ink-700 bg-ink-850 p-6 text-center"
           >
-            {state === 'error' ? (
+            {state === 'unavailable' ? (
               <>
-                <div className="text-sm font-semibold text-danger-500">Ad reward failed</div>
-                <p className="mt-2 text-xs text-ink-400">{error}</p>
+                <div className="text-sm font-semibold text-ink-100">Ad unavailable</div>
+                <p className="mt-2 text-xs text-ink-400">
+                  {navigator.onLine ? "No ad to show right now — try again shortly." : 'No network connection — rewarded ads need a connection.'}
+                </p>
                 <Button variant="secondary" className="mt-4 w-full" onClick={onClose}>
                   CLOSE
                 </Button>
               </>
             ) : state === 'rewarded' ? (
               <>
-                <div className="text-3xl">✓</div>
-                <div className="mt-2 text-lg font-bold text-focus-400">+{rewardCoins} coins</div>
+                <LightningBolt className="mx-auto h-8 w-8" />
+                <div className="mt-2 text-lg font-bold text-volt-400">+{DEFAULT_THUNDER_CONFIG.rewardedAdAmount} Thunder</div>
                 <p className="mt-1 text-xs text-ink-400">Reward credited</p>
               </>
             ) : (
@@ -96,7 +101,7 @@ export function RewardedAdModal({
                 <div className="mt-4 flex aspect-video items-center justify-center rounded-xl border border-dashed border-ink-600 bg-ink-900">
                   <span className="text-ink-500">Sponsored break</span>
                 </div>
-                <div className="mt-4 text-3xl font-black tabular-nums text-focus-400">
+                <div className="mt-4 text-3xl font-black tabular-nums text-volt-400">
                   {state === 'claiming' ? '…' : secondsLeft}
                 </div>
                 <p className="mt-2 text-xs text-ink-400">

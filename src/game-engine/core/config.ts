@@ -1,5 +1,6 @@
 import { DIFFICULTY_PRESETS, clampMutatorsToDifficulty } from '../difficulty'
-import { resolveMutatorRuntime } from '../mutators'
+import { resolveCompatibleMutators, resolveMutatorRuntime } from '../mutators'
+import { SeededRng } from './rng'
 import { ENGINE_VERSION, type DifficultyLevel, type GameConfig, type MutatorType, type ObjectiveType } from '../types'
 
 export interface BuildGameConfigInput {
@@ -19,7 +20,9 @@ export interface BuildGameConfigInput {
  */
 export function buildGameConfig(input: BuildGameConfigInput): GameConfig {
   const preset = DIFFICULTY_PRESETS[input.difficulty]
-  const mutators = clampMutatorsToDifficulty(input.mutators ?? [], input.difficulty)
+  const requested = input.mutators ?? pickRandomMutatorSubset(preset.allowedMutators, input.seed)
+  const clamped = clampMutatorsToDifficulty(requested, input.difficulty)
+  const mutators = resolveCompatibleMutators(clamped)
   const runtime = resolveMutatorRuntime(mutators, input.difficulty)
   const gridSize = input.gridSize ?? 10
   const cellCount = gridSize * gridSize
@@ -44,6 +47,19 @@ export function buildGameConfig(input: BuildGameConfigInput): GameConfig {
     seed: input.seed,
     engineVersion: ENGINE_VERSION,
   }
+}
+
+/**
+ * Deterministically picks a varied-but-compatible mutator set from a
+ * difficulty's allowed pool, seeded so the same seed always proposes the
+ * same set (needed for daily challenges / ghost reproducibility).
+ */
+function pickRandomMutatorSubset(pool: MutatorType[], seed: string): MutatorType[] {
+  if (pool.length === 0) return []
+  const rng = new SeededRng(`${seed}:mutator-pick`)
+  const shuffled = rng.shuffle(pool)
+  const count = Math.min(shuffled.length, 1 + Math.floor(rng.next() * 3))
+  return shuffled.slice(0, count)
 }
 
 export function randomSeed(): string {

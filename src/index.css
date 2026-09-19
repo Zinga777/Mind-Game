@@ -15,17 +15,21 @@
   --color-ink-100: #dde1ec;
   --color-ink-50: #f4f6fb;
 
-  /* Restrained accent: electric cyan for "focus", warm amber for reward */
-  --color-focus-500: #33e6c9;
-  --color-focus-400: #5ff2da;
-  --color-focus-600: #17bfa4;
+  /* Restrained accent: electric fluorescent green is the one primary accent.
+     Thunder gold is the single limited secondary tone, reserved for the
+     Thunder economy and reward moments — never used interchangeably with
+     the green accent. */
+  --color-volt-500: #39ff6a;
+  --color-volt-400: #6dff96;
+  --color-volt-600: #1fd94e;
+  --color-volt-glow: rgba(57, 255, 106, 0.35);
 
-  --color-ember-500: #ffb454;
-  --color-ember-400: #ffc978;
-  --color-ember-600: #f5943a;
+  --color-thunder-500: #ffcc33;
+  --color-thunder-400: #ffdb66;
+  --color-thunder-600: #e6ad12;
 
   --color-danger-500: #ff5c6c;
-  --color-success-500: #4ade80;
+  --color-success-500: #39ff6a;
 
   --font-display: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
   --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Consolas, monospace;
@@ -58,6 +62,18 @@ body {
   user-select: none;
   -webkit-user-select: none;
   -webkit-touch-callout: none;
+}
+
+/* In-app "Reduce Motion" setting (SettingsRepository.reduceMotion), applied
+   via a class on <html> — same effect as the OS-level media query below,
+   but user-controllable independent of the OS setting. */
+html[data-reduce-motion='true'] *,
+html[data-reduce-motion='true'] *::before,
+html[data-reduce-motion='true'] *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+  scroll-behavior: auto !important;
 }
 
 @media (prefers-reduced-motion: reduce) {

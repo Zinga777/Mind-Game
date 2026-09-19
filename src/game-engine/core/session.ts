@@ -1,12 +1,12 @@
 import type { CellVisualState, GameConfig, GameSessionState, GridCell } from '../types'
-import { generateGrid, reshuffleGrid } from './gridGenerator'
+import { generateGrid, mirrorGridValues, reshuffleGrid, rotateGridValues, swapCellValues } from './gridGenerator'
 import { SeededRng } from './rng'
 import { createObjectiveState, isRevealPhase, tickMemoryReveal, tickObjective, validateSelection } from '../objectives'
 import { resolveMutatorRuntime, validateMutatorCombo } from '../mutators'
 
 /**
  * A session keeps its own RNG stream, seeded from config.seed, so replaying
- * the same seed reproduces the same grid, target order, and shuffle timing.
+ * the same seed reproduces the same grid, target order, and mutator timing.
  */
 export function createSession(config: GameConfig, nowMs: number): GameSessionState {
   const combo = validateMutatorCombo(config.mutators)
@@ -36,6 +36,13 @@ export function createSession(config: GameConfig, nowMs: number): GameSessionSta
     lastEventAtMs: nowMs,
     status: 'active',
     shuffleSeq: 0,
+    rotationSeq: 0,
+    mirrorSeq: 0,
+    movingTargetSeq: 0,
+    lockedCellSeq: 0,
+    lockedCellIds: [],
+    blindPhaseSeq: 0,
+    blindUntilMs: 0,
   }
 }
 
@@ -49,12 +56,17 @@ function runtimeRng(state: GameSessionState, cursor: string): SeededRng {
   return new SeededRng(`${state.config.seed}:${cursor}`)
 }
 
+export function isBlind(state: GameSessionState, elapsedMs: number): boolean {
+  return elapsedMs < state.blindUntilMs
+}
+
 export function selectCell(state: GameSessionState, cellId: string, nowMs: number): GameSessionState {
   if (state.status !== 'active') return state
   const cell = state.cells.find((c) => c.id === cellId)
   if (!cell) return state
   if (state.cellVisualState[cellId] === 'vanished' || state.cellVisualState[cellId] === 'locked') return state
   if (isRevealPhase(state.objective)) return state
+  if (isBlind(state, nowMs - state.startedAtMs)) return state
 
   const result = validateSelection(state.objective, cell)
   const reactionMs = Math.max(0, nowMs - state.lastEventAtMs)
@@ -86,12 +98,22 @@ export function selectCell(state: GameSessionState, cellId: string, nowMs: numbe
   return next
 }
 
+function currentTargetCellId(state: GameSessionState): string | null {
+  const objective = state.objective.type === 'rule-switch' ? state.objective.sub : state.objective
+  if (objective.type !== 'target-hunt') return null
+  const targetValue = objective.targets[objective.index]
+  if (targetValue === undefined) return null
+  return state.cells.find((c) => c.value === targetValue)?.id ?? null
+}
+
 /** Called on each animation/timer frame to advance mutators and reveal phases. */
 export function tick(state: GameSessionState, nowMs: number, deltaMs: number): GameSessionState {
   if (state.status !== 'active') return state
 
   const elapsedMs = nowMs - state.startedAtMs
   let next = state
+  const runtime = resolveMutatorRuntime(next.config.mutators, next.config.difficulty)
+  const mutators = next.config.mutators
 
   const { state: objAfterRuleSwitch, prompt } = tickObjective(
     next.objective,
@@ -113,16 +135,73 @@ export function tick(state: GameSessionState, nowMs: number, deltaMs: number): G
     }
   }
 
-  if (next.config.mutators.includes('shuffle')) {
-    const runtime = resolveMutatorRuntime(next.config.mutators, next.config.difficulty)
-    const acceleration = next.config.mutators.includes('turbo')
-      ? Math.floor(elapsedMs / 1000) * 250
-      : 0
-    const interval = Math.max(1500, runtime.shuffleIntervalMs - acceleration)
+  const turboAcceleration = mutators.includes('turbo') ? Math.floor(elapsedMs / 1000) * runtime.turboAccelerationMs : 0
+
+  if (mutators.includes('shuffle')) {
+    const interval = Math.max(1500, runtime.shuffleIntervalMs - turboAcceleration)
     const dueSeq = Math.floor(elapsedMs / interval)
     if (dueSeq > next.shuffleSeq) {
-      const reshuffled = reshuffleGrid(next.cells, runtimeRng(next, `shuffle:${dueSeq}`))
-      next = { ...next, cells: reshuffled, shuffleSeq: dueSeq }
+      next = { ...next, cells: reshuffleGrid(next.cells, runtimeRng(next, `shuffle:${dueSeq}`)), shuffleSeq: dueSeq }
+    }
+  }
+
+  if (mutators.includes('rotation')) {
+    const interval = Math.max(2000, runtime.rotationIntervalMs - turboAcceleration)
+    const dueSeq = Math.floor(elapsedMs / interval)
+    if (dueSeq > next.rotationSeq) {
+      next = { ...next, cells: rotateGridValues(next.cells, next.config.gridSize), rotationSeq: dueSeq }
+    }
+  }
+
+  if (mutators.includes('mirror')) {
+    const interval = Math.max(2000, runtime.mirrorIntervalMs - turboAcceleration)
+    const dueSeq = Math.floor(elapsedMs / interval)
+    if (dueSeq > next.mirrorSeq) {
+      next = { ...next, cells: mirrorGridValues(next.cells, next.config.gridSize), mirrorSeq: dueSeq }
+    }
+  }
+
+  if (mutators.includes('moving-targets')) {
+    const interval = Math.max(1500, runtime.movingTargetIntervalMs - turboAcceleration)
+    const dueSeq = Math.floor(elapsedMs / interval)
+    if (dueSeq > next.movingTargetSeq) {
+      const targetId = currentTargetCellId(next)
+      if (targetId) {
+        const rng = runtimeRng(next, `moving-target:${dueSeq}`)
+        const otherIds = next.cells.map((c) => c.id).filter((id) => id !== targetId)
+        const destination = otherIds[rng.nextInt(0, otherIds.length - 1)]
+        next = { ...next, cells: swapCellValues(next.cells, targetId, destination), movingTargetSeq: dueSeq }
+      } else {
+        next = { ...next, movingTargetSeq: dueSeq }
+      }
+    }
+  }
+
+  if (mutators.includes('locked-cells')) {
+    const interval = Math.max(2000, runtime.lockedCellIntervalMs - turboAcceleration)
+    const dueSeq = Math.floor(elapsedMs / interval)
+    if (dueSeq > next.lockedCellSeq) {
+      const rng = runtimeRng(next, `locked:${dueSeq}`)
+      const eligible = next.cells.filter((c) => {
+        const s = next.cellVisualState[c.id]
+        return s === 'idle' || s === 'locked'
+      })
+      const shuffled = rng.shuffle(eligible.map((c) => c.id))
+      const newlyLocked = shuffled.slice(0, Math.min(runtime.lockedCellCount, shuffled.length))
+
+      const nextVisual = { ...next.cellVisualState }
+      for (const id of next.lockedCellIds) if (nextVisual[id] === 'locked') nextVisual[id] = 'idle'
+      for (const id of newlyLocked) nextVisual[id] = 'locked'
+
+      next = { ...next, cellVisualState: nextVisual, lockedCellIds: newlyLocked, lockedCellSeq: dueSeq }
+    }
+  }
+
+  if (mutators.includes('blind-phase')) {
+    const interval = Math.max(3000, runtime.blindPhaseIntervalMs - turboAcceleration)
+    const dueSeq = Math.floor(elapsedMs / interval)
+    if (dueSeq > next.blindPhaseSeq) {
+      next = { ...next, blindPhaseSeq: dueSeq, blindUntilMs: elapsedMs + runtime.blindPhaseDurationMs }
     }
   }
 

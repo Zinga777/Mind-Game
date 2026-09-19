@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createSession, remainingTimeMs, selectCell, tick } from '../../game-engine/core/session'
-import type { GameConfig, GameSessionState } from '../../game-engine/types'
+import type { GameConfig, GameSessionState, SelectionEvent } from '../../game-engine/types'
 
-export function useMindGridSession(config: GameConfig) {
+export function useMindGridSession(config: GameConfig, onSelection?: (event: SelectionEvent, comboAfter: number) => void) {
   const [session, setSession] = useState<GameSessionState>(() => createSession(config, performance.now()))
   const [remainingMs, setRemainingMs] = useState(() => config.durationSeconds * 1000)
   const lastFrameRef = useRef(performance.now())
   const rafRef = useRef<number>(0)
+  const onSelectionRef = useRef(onSelection)
+  onSelectionRef.current = onSelection
 
   useEffect(() => {
     setSession(createSession(config, performance.now()))
@@ -39,8 +41,16 @@ export function useMindGridSession(config: GameConfig) {
   }, [])
 
   const select = useCallback((cellId: string) => {
-    setSession((prev) => selectCell(prev, cellId, performance.now()))
+    setSession((prev) => {
+      const next = selectCell(prev, cellId, performance.now())
+      if (next.events.length > prev.events.length) {
+        onSelectionRef.current?.(next.events[next.events.length - 1], next.combo)
+      }
+      return next
+    })
   }, [])
 
-  return { session, remainingMs, select }
+  const elapsedMs = config.durationSeconds * 1000 - remainingMs
+
+  return { session, remainingMs, elapsedMs, select }
 }

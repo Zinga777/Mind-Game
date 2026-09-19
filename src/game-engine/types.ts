@@ -18,7 +18,17 @@ export type ObjectiveType =
   | 'rule-switch'
   | 'memory'
 
-export type MutatorType = 'shuffle' | 'vanish' | 'precision' | 'turbo' | 'distraction'
+export type MutatorType =
+  | 'shuffle'
+  | 'vanish'
+  | 'precision'
+  | 'turbo'
+  | 'distraction'
+  | 'rotation'
+  | 'mirror'
+  | 'moving-targets'
+  | 'locked-cells'
+  | 'blind-phase'
 
 export type DifficultyLevel = 'beginner' | 'intermediate' | 'advanced' | 'expert' | 'master'
 
@@ -102,6 +112,13 @@ export interface GameSessionState {
   lastEventAtMs: number
   status: 'countdown' | 'active' | 'completed'
   shuffleSeq: number
+  rotationSeq: number
+  mirrorSeq: number
+  movingTargetSeq: number
+  lockedCellSeq: number
+  lockedCellIds: string[]
+  blindPhaseSeq: number
+  blindUntilMs: number
 }
 
 export interface ScoreBreakdown {
