@@ -26,7 +26,7 @@ if inst:
 if side:
     tr = tr[tr.side.isin(side)]
 view = pd.DataFrame({
-    "Mode": tr["mode"].str.upper(), "Strategy": tr.strategy_id, "Instrument": tr.instrument, "Side": tr.side,
+    "Mode": tr["mode"].str.upper() + tr["sample_data"].map(lambda x: " · SAMPLE" if x else ""), "Strategy": tr.strategy_id, "Instrument": tr.instrument, "Side": tr.side,
     "Entry (IST)": tr.entry_time.map(lambda t: fmt.ist(t, "%d %b %H:%M")),
     "Exit (IST)": tr.exit_time.map(lambda t: fmt.ist(t, "%d %b %H:%M")),
     "Entry": tr.entry.round(2), "Exit": tr.exit.round(2), "Qty": tr.qty, "Stop": tr.stop.round(2),

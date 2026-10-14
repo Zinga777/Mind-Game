@@ -36,12 +36,13 @@ class CoinDCXPrivate:
         payload, headers = signed_request(body, self._key, self._secret)
         return self.http.request("POST", f"{self.api}{path}", data=payload, headers=headers)
 
-    def server_time_ms(self) -> int:
+    def server_time_ms(self) -> int | None:
+        """Exchange clock in ms, or None if it cannot be read (callers must then refuse to trade)."""
         try:
             r = self.http.request("GET", f"{self.api}/exchange/v1/time")
             return int(r.get("server_time", r.get("serverTime")))
         except Exception:
-            return int(time.time() * 1000)
+            return None
 
     def balances(self) -> object:
         return self._post("/exchange/v1/derivatives/futures/wallets", {})

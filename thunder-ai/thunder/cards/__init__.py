@@ -57,7 +57,8 @@ def code_hash(strategy_id: str) -> str:
 
 
 def card_config(cfg: Config) -> dict:
-    return {"risk": cfg.risk.model_dump(), "costs": cfg.costs.model_dump(), "threshold": cfg.council.threshold}
+    return {"risk": cfg.risk.model_dump(), "costs": cfg.costs.model_dump(), "threshold": cfg.council.threshold,
+            "gates": cfg.gates.model_dump()}
 
 
 def cfg_hash(d: dict) -> str:
@@ -100,7 +101,7 @@ def verify(card: StrategyCard, cfg: Config) -> tuple[bool, str]:
     if code_hash(card.strategy_id) != card.code_hash:
         return False, "strategy or core code changed since this card was validated (tamper check failed)"
     if cfg_hash(card_config(cfg)) != card.config_hash:
-        return False, "risk/cost settings differ from those the card was validated with"
+        return False, "risk/cost/gate settings differ from those the card was validated with"
     return True, "hashes verified"
 
 

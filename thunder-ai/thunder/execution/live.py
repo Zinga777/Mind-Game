@@ -15,15 +15,16 @@ import uuid
 from dataclasses import dataclass
 from typing import Optional
 
+from ..backtest.promotion import LIVE_ELIGIBLE, PAPER_PROVEN
 from ..cards import StrategyCard, verify
-from ..config.schema import Config
+from ..config.schema import Config, GatesCfg
 from ..db import kv_get, kv_set, log_event, now_ms
 from ..exchanges.base import OrderRequest
-from ..backtest.promotion import LIVE_ELIGIBLE, PAPER_PROVEN
 
 CONFIRM_PHRASE = "I UNDERSTAND I CAN LOSE THIS MONEY"
 FIRST_TRADES_NEEDING_APPROVAL = 20
 MAX_CLOCK_SKEW_MS = 5_000
+FILL_WAIT_S = 10.0
 
 
 class LiveLocked(PermissionError):
@@ -37,17 +38,32 @@ class GateStatus:
     plain: str
 
 
+def recomputed_status(con: sqlite3.Connection, cfg: Config, card: StrategyCard) -> str:
+    """Never trust the status written in a card file: recompute it from the backtest evidence in the
+    card plus REAL (non-sample) paper trades of this strategy made AFTER the card was created."""
+    from ..engine.evidence import paper_evidence
+    from ..backtest import promotion
+    ev = {**((card.evidence or {}).get("evidence") or {}),
+          **paper_evidence(con, card.strategy_id, since_ms=card.created_at, params=card.parameters)}
+    return promotion.evaluate(ev, GatesCfg()).status
+
+
 def gate_status(con: sqlite3.Connection, cfg: Config, card: Optional[StrategyCard]) -> list[GateStatus]:
     g: list[GateStatus] = []
-    ok_card = card is not None and card.status in (PAPER_PROVEN, LIVE_ELIGIBLE) and not card.sample_data
     hv = verify(card, cfg) if card else (False, "no card selected")
-    g.append(GateStatus("Strategy is PAPER_PROVEN and its hashes verify", ok_card and hv[0],
-                        "Select a Strategy Card that passed 30+ days of forward paper trading. " + hv[1]))
-    last_paper = con.execute("SELECT MAX(exit_time) FROM trades WHERE mode='paper' AND strategy_id=?",
+    status = recomputed_status(con, cfg, card) if card and hv[0] and not card.sample_data else "RESEARCH"
+    ok_card = card is not None and not card.sample_data and status in (PAPER_PROVEN, LIVE_ELIGIBLE)
+    g.append(GateStatus("Strategy is PAPER_PROVEN (re-checked from stored evidence) and its hashes verify", ok_card and hv[0],
+                        f"Needs backtest gates + 30 days / 50 real forward paper trades after the card was made. "
+                        f"Re-checked status: {status}. {hv[1]}"))
+    gates_ok = cfg.gates == GatesCfg()
+    g.append(GateStatus("Promotion gates are at their safe defaults (not relaxed)", gates_ok,
+                        "Loosened gates can promote weak strategies; live needs the default gates."))
+    last_paper = con.execute("SELECT MAX(exit_time) FROM trades WHERE mode='paper' AND sample_data=0 AND strategy_id=?",
                              (card.strategy_id if card else "",)).fetchone()[0]
     fresh = bool(last_paper) and now_ms() - last_paper <= 7 * 86_400_000
-    g.append(GateStatus("Paper results are less than 7 days old", fresh,
-                        "The paper engine must have been running this strategy recently."))
+    g.append(GateStatus("Real paper results are less than 7 days old", fresh,
+                        "The paper engine must have been running this strategy on real data recently."))
     conn = kv_get(con, "live_conn_test", {}) or {}
     g.append(GateStatus("API key entered and read-only connection test passed", bool(conn.get("ok")),
                         "Enter a key with TRADE permission only (no withdrawal), ideally IP-bound, then press Test."))
@@ -79,20 +95,27 @@ def require_live(con: sqlite3.Connection, cfg: Config, card: Optional[StrategyCa
 class LiveExecutor:
     """Places real orders through CoinDCXPrivate. Every method re-checks the gates."""
 
-    def __init__(self, con: sqlite3.Connection, cfg: Config, card: StrategyCard, private, alert=None):
+    def __init__(self, con: sqlite3.Connection, cfg: Config, card: StrategyCard, private, alert=None,
+                 sleep=time.sleep):
         self.con, self.cfg, self.card, self.ex = con, cfg, card, private
         self.alert = alert or (lambda level, msg: log_event(con, level, "live", msg))
         self.rejections = 0
+        self.sleep = sleep
 
     def _guard(self) -> None:
         require_live(self.con, self.cfg, self.card)
-        skew = abs(self.ex.server_time_ms() - now_ms())
+        st = self.ex.server_time_ms()
+        if st is None:
+            raise LiveLocked("cannot read the exchange clock: not sending orders")
+        skew = abs(st - now_ms())
         if skew > MAX_CLOCK_SKEW_MS:
             raise LiveLocked(f"clock skew {skew} ms vs exchange: fix the computer clock")
 
+    def live_entries(self) -> int:
+        return self.con.execute("SELECT COUNT(*) FROM orders WHERE mode='live' AND status IN ('filled','protected','exited')").fetchone()[0]
+
     def needs_owner_approval(self) -> bool:
-        n = self.con.execute("SELECT COUNT(*) FROM trades WHERE mode='live'").fetchone()[0]
-        return kv_get(self.con, "live_per_trade_approval", True) and n < FIRST_TRADES_NEEDING_APPROVAL
+        return kv_get(self.con, "live_per_trade_approval", True) and self.live_entries() < FIRST_TRADES_NEEDING_APPROVAL
 
     def equity_inr(self) -> float:
         raw = self.ex.balances()
@@ -102,48 +125,77 @@ class LiveExecutor:
                 bal += float(w.get("balance", 0)) + float(w.get("unrealised_pnl", 0) or 0)
         return bal
 
+    def _set_status(self, coid: str, status: str, exch_id: str | None = None) -> None:
+        self.con.execute("UPDATE orders SET status=?, exchange_order_id=COALESCE(?, exchange_order_id), updated_at=? "
+                         "WHERE client_order_id=?", (status, exch_id, now_ms(), coid))
+
+    def _position(self, pair: str):
+        return next((p for p in self.ex.positions() if p.pair == pair), None)
+
     def open_position(self, pair: str, side: str, qty: float, stop: float, target: float, leverage: int,
                       limit_price: Optional[float] = None) -> dict:
         self._guard()
+        # H3/H6: never add to an existing position on this pair
+        if self._position(pair) is not None:
+            raise LiveLocked(f"a position on {pair} is already open on the exchange: not adding to it")
         coid = f"th-{uuid.uuid4().hex[:16]}"
         self.ex.update_leverage(pair, leverage)
         req = OrderRequest(coid, pair, "buy" if side == "long" else "sell",
                            "limit" if limit_price else "market", qty, price=limit_price, leverage=leverage)
-        self.con.execute("INSERT INTO orders(mode,account_id,client_order_id,instrument,side,order_type,qty,price,status,created_at,updated_at)"
-                         " VALUES('live',?,?,?,?,?,?,?,?,?,?)", (self.card.card_id, coid, pair, req.side, req.order_type,
-                                                                 qty, limit_price, "sent", now_ms(), now_ms()))
+        self.con.execute("INSERT INTO orders(mode,account_id,client_order_id,instrument,side,order_type,qty,price,stop_price,status,created_at,updated_at)"
+                         " VALUES('live',?,?,?,?,?,?,?,?,?,?,?)", (self.card.card_id, coid, pair, req.side, req.order_type,
+                                                                   qty, limit_price, stop, "sent", now_ms(), now_ms()))
         try:
             ack = self.ex.place_order(req)
         except Exception as e:
-            # never blindly resend: check whether it reached the exchange first
+            # never blindly resend: the order may or may not have reached the exchange
             self.rejections += 1
+            self._set_status(coid, "error")
             self.alert("ERROR", f"entry order failed ({type(e).__name__}); not resent")
             if self.rejections >= 3:
                 self.halt("3 consecutive order rejections")
             raise
         self.rejections = 0
-        self.con.execute("UPDATE orders SET exchange_order_id=?, status=?, updated_at=? WHERE client_order_id=?",
-                         (ack.order_id, ack.status, now_ms(), coid))
-        # protective orders immediately on fill
-        pos = [p for p in self.ex.positions() if p.pair == pair]
-        if not pos:
-            return {"client_order_id": coid, "status": ack.status, "protected": False, "note": "not filled yet"}
+        self._set_status(coid, ack.status, ack.order_id)
+        # wait for the fill; an entry that does not fill in time is cancelled (no unattended resting entries)
+        pos = None
+        waited = 0.0
+        while waited <= FILL_WAIT_S:
+            pos = self._position(pair)
+            if pos is not None:
+                break
+            self.sleep(1.0)
+            waited += 1.0
+        if pos is None:
+            try:
+                self.ex.cancel_order(ack.order_id)
+            except Exception:
+                pass
+            self.sleep(0.5)
+            pos = self._position(pair)  # a fill can race the cancel
+            if pos is None:
+                self._set_status(coid, "cancelled")
+                return {"client_order_id": coid, "status": "cancelled", "protected": False}
+        self._set_status(coid, "filled")
+        # H4: protective orders immediately; if they cannot be confirmed, get out and halt
         try:
-            self.ex.create_tpsl(pos[0].position_id, stop, target)
+            self.ex.create_tpsl(pos.position_id, stop, target)
         except Exception as e:
             self.alert("HALT", f"could not place stop-loss ({type(e).__name__}): exiting at market and halting")
             try:
-                self.ex.exit_position(pos[0].position_id)
+                self.ex.exit_position(pos.position_id)
             finally:
+                self._set_status(coid, "exited")
                 self.halt("protective order failure")
             return {"client_order_id": coid, "status": "exited", "protected": False}
+        self._set_status(coid, "protected")
         self.alert("WARN", f"LIVE order filled: {side} {qty} {pair}; stop {stop}, target {target}")
-        return {"client_order_id": coid, "status": ack.status, "protected": True, "position_id": pos[0].position_id}
+        return {"client_order_id": coid, "status": "protected", "protected": True, "position_id": pos.position_id}
 
     def exit_all_and_halt(self, reason: str = "owner pressed EXIT ALL & HALT") -> None:
         """Cancels open orders and closes positions at market, then locks live mode.
         Deliberately does NOT require the gates: getting out must always be possible."""
-        for o in self.con.execute("SELECT exchange_order_id FROM orders WHERE mode='live' AND status IN ('open','sent','untriggered')"):
+        for o in self.con.execute("SELECT exchange_order_id FROM orders WHERE mode='live' AND status IN ('open','sent','untriggered','init')").fetchall():
             if o[0]:
                 try:
                     self.ex.cancel_order(o[0])

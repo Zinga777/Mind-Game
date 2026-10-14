@@ -161,13 +161,14 @@ def _card(cfg, status="PAPER_PROVEN"):
     return cards.build_card("S1", summ, cfg, sample_data=False)
 
 
-def test_live_disabled_by_default_and_every_gate_required(con):
+def test_live_disabled_by_default_and_every_gate_required(con, monkeypatch):
     cfg = Config()
     card = _card(cfg)
+    monkeypatch.setattr(live, "recomputed_status", lambda *a: "PAPER_PROVEN")
     with pytest.raises(live.LiveLocked):
         live.require_live(con, cfg, card)
     # satisfy gates one by one; live stays locked until ALL pass and it is armed
-    con.execute("INSERT INTO trades(mode,strategy_id,exit_time,net_pnl,r_multiple) VALUES('paper','S1',?,1,0.1)",
+    con.execute("INSERT INTO trades(mode,strategy_id,exit_time,net_pnl,r_multiple,sample_data) VALUES('paper','S1',?,1,0.1,0)",
                 (__import__("thunder.db", fromlist=["now_ms"]).now_ms(),))
     kv_set(con, "live_conn_test", {"ok": True})
     kv_set(con, "live_phrase_ok", True)
@@ -176,7 +177,9 @@ def test_live_disabled_by_default_and_every_gate_required(con):
     assert not live.live_enabled(con, cfg, card)              # not armed
     kv_set(con, "live_armed", True)
     assert live.live_enabled(con, cfg, card)
-    assert not live.live_enabled(con, cfg, _card(cfg, "CONFIRMED_BACKTEST"))  # status gate
+    monkeypatch.setattr(live, "recomputed_status", lambda *a: "CONFIRMED_BACKTEST")
+    assert not live.live_enabled(con, cfg, card)                               # status gate (recomputed)
+    monkeypatch.setattr(live, "recomputed_status", lambda *a: "PAPER_PROVEN")
     sample = card.model_copy(update={"sample_data": True})
     assert not live.live_enabled(con, cfg, sample)
     kv_set(con, "live_halted", True)
@@ -188,10 +191,16 @@ def test_config_alone_cannot_enable_live():
     assert "live_enabled" not in json.dumps(Config().model_dump(mode="json"))
 
 
+@pytest.fixture(autouse=True)
+def _proven(monkeypatch, request):
+    if "unproven" not in request.keywords:
+        monkeypatch.setattr(live, "recomputed_status", lambda *a: "PAPER_PROVEN")
+
+
 def _live_setup(con, mock):
     cfg = Config()
     card = _card(cfg)
-    con.execute("INSERT INTO trades(mode,strategy_id,exit_time,net_pnl,r_multiple) VALUES('paper','S1',?,1,0.1)",
+    con.execute("INSERT INTO trades(mode,strategy_id,exit_time,net_pnl,r_multiple,sample_data) VALUES('paper','S1',?,1,0.1,0)",
                 (__import__("thunder.db", fromlist=["now_ms"]).now_ms(),))
     for k, v in (("live_conn_test", {"ok": True}), ("live_phrase_ok", True), ("live_smoke_ok", {"ok": True}), ("live_armed", True)):
         kv_set(con, k, v)
@@ -209,7 +218,7 @@ def test_live_signing_matches_documented_hmac_and_mock_accepts(con):
     assert payload == '{"a":1,"timestamp":5}' and headers["X-AUTH-APIKEY"] == "k"
     m = MockCoinDCX()
     cfg, card, priv = _live_setup(con, m)
-    ex = live.LiveExecutor(con, cfg, card, priv)
+    ex = live.LiveExecutor(con, cfg, card, priv, sleep=lambda s: None)
     res = ex.open_position("B-BTC_USDT", "long", 0.001, 90, 110, 5)
     assert res["protected"] is True
     bad = CoinDCXPrivate(m.api_key, "wrong-secret", Http(session=m, sleep=lambda s: None))
@@ -220,7 +229,7 @@ def test_live_signing_matches_documented_hmac_and_mock_accepts(con):
 def test_protective_order_failure_exits_and_halts(con):
     m = MockCoinDCX(fail_tpsl=True)
     cfg, card, priv = _live_setup(con, m)
-    ex = live.LiveExecutor(con, cfg, card, priv)
+    ex = live.LiveExecutor(con, cfg, card, priv, sleep=lambda s: None)
     res = ex.open_position("B-BTC_USDT", "long", 0.001, 90, 110, 5)
     assert res["protected"] is False and res["status"] == "exited"
     assert not m.positions                                   # market-exited
@@ -231,7 +240,7 @@ def test_protective_order_failure_exits_and_halts(con):
 def test_exit_all_and_halt_and_never_moves_money(con):
     m = MockCoinDCX()
     cfg, card, priv = _live_setup(con, m)
-    ex = live.LiveExecutor(con, cfg, card, priv)
+    ex = live.LiveExecutor(con, cfg, card, priv, sleep=lambda s: None)
     ex.open_position("B-BTC_USDT", "long", 0.001, 90, 110, 5)
     ex.exit_all_and_halt()
     assert not m.positions and not live.live_enabled(con, cfg, card)
@@ -246,7 +255,7 @@ def test_live_paths_raise_when_locked(con):
     cfg = Config()
     card = _card(cfg)
     priv = CoinDCXPrivate(m.api_key, m.api_secret, Http(session=m, sleep=lambda s: None))
-    ex = live.LiveExecutor(con, cfg, card, priv)
+    ex = live.LiveExecutor(con, cfg, card, priv, sleep=lambda s: None)
     with pytest.raises(live.LiveLocked):
         ex.open_position("B-BTC_USDT", "long", 0.001, 90, 110, 5)
     assert not [c for c in m.calls if c[1].endswith("/orders/create")]
@@ -275,3 +284,101 @@ def test_groww_is_a_stub():
 
 def test_outcome_types():
     assert CouncilOutcome("veto", 0.0).size_factor <= 1.0
+
+
+@pytest.mark.unproven
+def test_imported_card_status_is_not_trusted(con):
+    cfg = Config()
+    forged = _card(cfg, "PAPER_PROVEN")           # claims PAPER_PROVEN with no evidence behind it
+    assert live.recomputed_status(con, cfg, forged) == "RESEARCH"
+    g = live.gate_status(con, cfg, forged)[0]
+    assert not g.passed and "RESEARCH" in g.plain
+
+
+def test_relaxed_gates_block_live(con):
+    m = MockCoinDCX()
+    cfg, card, priv = _live_setup(con, m)
+    cfg.gates.min_oos_trades = 10
+    assert not live.live_enabled(con, cfg, card)
+
+
+def test_unfilled_limit_entry_is_cancelled_not_left_unprotected(con):
+    m = MockCoinDCX()
+    cfg, card, priv = _live_setup(con, m)
+    ex = live.LiveExecutor(con, cfg, card, priv, sleep=lambda s: None)
+    res = ex.open_position("B-BTC_USDT", "long", 0.001, 90, 110, 5, limit_price=95.0)
+    assert res["status"] == "cancelled" and not m.positions
+    assert all(o["status"] == "cancelled" for o in m.orders.values())
+
+
+def test_live_never_adds_to_an_open_position(con):
+    m = MockCoinDCX()
+    cfg, card, priv = _live_setup(con, m)
+    ex = live.LiveExecutor(con, cfg, card, priv, sleep=lambda s: None)
+    ex.open_position("B-BTC_USDT", "long", 0.001, 90, 110, 5)
+    with pytest.raises(live.LiveLocked):
+        ex.open_position("B-BTC_USDT", "long", 0.001, 90, 110, 5)
+    assert abs(next(iter(m.positions.values()))["active_pos"] - 0.001) < 1e-12
+
+
+def test_unreachable_exchange_clock_blocks_orders(con, monkeypatch):
+    m = MockCoinDCX(fail_status={"/exchange/v1/time": 500})
+    cfg, card, priv = _live_setup(con, m)
+    ex = live.LiveExecutor(con, cfg, card, priv, sleep=lambda s: None)
+    with pytest.raises(live.LiveLocked):
+        ex.open_position("B-BTC_USDT", "long", 0.001, 90, 110, 5)
+
+
+def test_bridge_sizes_from_real_balance_and_enforces_live_killswitch(con):
+    from tests.conftest import unit_spec
+    from thunder.engine.live_bridge import LiveBridge
+    from thunder.risk.killswitch import AccountState
+    from thunder.backtest.runner import StrategyRunner
+    m = MockCoinDCX(price=100.0)                     # exchange wallet holds 2500.5 INR
+    cfg, card, priv = _live_setup(con, m)
+    cfg.capital.starting_paper_equity_inr = 10_000_000.0    # huge PAPER balance must not leak into live size
+    shadow = StrategyRunner(strategies.get("S1"), unit_spec(pair="B-BTC_USDT", qty_step=0.001, min_qty=0.001),
+                            cfg, AccountState(starting_equity=10_000_000.0))
+    kv_set(con, "market_now", {"B-BTC_USDT": {"close": 100.0}})
+    b = LiveBridge(con, cfg, card, priv, shadow, sleep=lambda s: None)
+    plan = {"pair": "B-BTC_USDT", "side": "long", "stop": 98.0, "target": 106.0, "max_entry": 100.5, "ts": 0}
+    ok, why, size = b._plan_ok(plan)
+    assert ok, why
+    assert size.realised_risk <= 2500.5 * cfg.risk.risk_pct + 1e-9     # sized from the REAL balance
+    b._send(plan)
+    assert "B-BTC_USDT" in b.expected
+    ok2, why2, _ = b._plan_ok(plan)
+    assert not ok2 and "already open" in why2
+    # a big real loss trips the LIVE kill-switch and flattens
+    b.acct.peak = 5000.0
+    b.refresh_account()
+    assert b.acct.halted and not m.positions and not live.live_enabled(con, cfg, card)
+
+
+def test_bridge_rejects_stale_price(con):
+    from tests.conftest import unit_spec
+    from thunder.engine.live_bridge import LiveBridge
+    from thunder.risk.killswitch import AccountState
+    from thunder.backtest.runner import StrategyRunner
+    m = MockCoinDCX(price=100.0)
+    cfg, card, priv = _live_setup(con, m)
+    shadow = StrategyRunner(strategies.get("S1"), unit_spec(pair="B-BTC_USDT"), cfg, AccountState(starting_equity=1000.0))
+    kv_set(con, "market_now", {"B-BTC_USDT": {"close": 103.0}})       # ran past the chase limit
+    b = LiveBridge(con, cfg, card, priv, shadow, sleep=lambda s: None)
+    ok, why, _ = b._plan_ok({"pair": "B-BTC_USDT", "side": "long", "stop": 98.0, "target": 106.0, "max_entry": 100.5, "ts": 0})
+    assert not ok and "chase" in why
+
+
+def test_engine_exit_all_really_exits(con, monkeypatch):
+    from thunder.engine import main as M
+    m = MockCoinDCX()
+    cfg, card, priv = _live_setup(con, m)
+    cards.save(con, card)
+    ex = live.LiveExecutor(con, cfg, card, priv, sleep=lambda s: None)
+    ex.open_position("B-BTC_USDT", "long", 0.001, 90, 110, 5)
+    assert m.positions
+    eng = M.Engine.__new__(M.Engine)
+    eng.con, eng.cfg, eng.bridge = con, cfg, None
+    monkeypatch.setattr(M.Engine, "_live_executor", lambda self: ex)
+    eng._exec("EXIT_ALL_HALT", {})
+    assert not m.positions and not live.live_enabled(con, cfg, card)

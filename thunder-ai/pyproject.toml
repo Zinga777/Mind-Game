@@ -8,4 +8,4 @@ requires-python = ">=3.11"
 testpaths = ["tests"]
 timeout = 600
 addopts = "-q"
-markers = ["slow: long-running soak / arena tests"]
+markers = ["slow: long-running soak / arena tests", "unproven: do not stub the recomputed card status"]

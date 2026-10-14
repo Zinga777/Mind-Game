@@ -35,3 +35,12 @@ def test_arena_on_sample_data(con):
 def test_no_edge_message_is_shown_when_true():
     assert "No strategy has shown a net edge yet" in promotion.NO_EDGE_MESSAGE
     _ = np
+
+
+def test_test_split_reuse_by_a_different_version_is_contaminated(con):
+    from thunder.backtest.arena import _test_reuse
+    rs = [{"instrument": "X", "params": {"a": 1}, "split_times": {"test": [1, 2]}}]
+    assert not _test_reuse(con, "S1", rs)
+    assert not _test_reuse(con, "S1", rs)                 # same version again: harmless
+    rs2 = [{**rs[0], "params": {"a": 2}}]                  # tuned and re-scored on the same test data
+    assert _test_reuse(con, "S1", rs2)

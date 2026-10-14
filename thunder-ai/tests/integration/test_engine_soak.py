@@ -81,3 +81,17 @@ def test_corrupt_state_stops_safely(tmp_path):
     with pytest.raises(EngineStateError):
         Engine(con, cfg)
     con.close()
+
+
+def test_switch_to_real_purges_sample_data(tmp_path):
+    cfg = _cfg()
+    con = connect(tmp_path / "e.db")
+    load_demo(con, cfg.exchange.instruments, days=50, seed=5, future_days=3)
+    kv_set(con, "engine_running", True)
+    eng = Engine(con, cfg, demo_bars_per_tick=500)
+    eng.tick()
+    eng._exec("SET_MODE", {"data_mode": "real"})
+    assert con.execute("SELECT COUNT(*) FROM candles WHERE source='synthetic'").fetchone()[0] == 0
+    assert con.execute("SELECT COUNT(*) FROM trades WHERE mode='paper'").fetchone()[0] == 0
+    eng._exec("SET_MODE", {"data_mode": "demo"})
+    con.close()

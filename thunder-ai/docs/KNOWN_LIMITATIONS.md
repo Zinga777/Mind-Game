@@ -28,3 +28,7 @@
   password-protected "Enable remote access" switch was deliberately not built, so live controls are never exposed.
 - **1-minute polling between candle closes** (to trigger stops earlier in paper mode) is not implemented; paper
   stops are evaluated on each closed 5m candle with the pessimistic stop-first rule. Live stops are exchange-side.
+- **Use a dedicated futures wallet for live.** The live reconciler treats any position it did not open as a
+  mismatch: it closes all positions, cancels entries and halts. Do not hold manual positions alongside the bot.
+- **Live daily-loss tracking uses balance changes.** A manual deposit during the day counts as a gain for that
+  day's loss limit (it never lowers protection on later days, and the drawdown kill-switch uses the peak).

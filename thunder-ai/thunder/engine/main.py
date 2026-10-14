@@ -156,9 +156,14 @@ class Engine:
             mode = a.get("data_mode")
             if mode not in ("demo", "real"):
                 raise ValueError("data_mode must be demo or real")
+            changed = mode != self.cfg.data_mode
             self.cfg = self.cfg.model_copy(update={"data_mode": mode})
             save_config(self.cfg)
             kv_set(self.con, "data_mode", mode)
+            if changed and mode == "real":
+                # never mix SAMPLE candles or sample-era paper results with real ones
+                self.con.execute("DELETE FROM candles WHERE source='synthetic' OR timeframe='5m_future'")
+                self._exec("RESET_PAPER", {})
             return f"data mode {mode}"
         if cmd == "RESET_PAPER":
             self.con.execute("BEGIN")
@@ -215,7 +220,12 @@ class Engine:
             return f"card {card.card_id} saved"
         if cmd == "EXIT_ALL_HALT":
             kv_set(self.con, "live_halted", True); kv_set(self.con, "live_armed", False)
-            log_event(self.con, "HALT", "live", "EXIT ALL & HALT pressed: live mode locked.")
+            ex = self._live_executor()
+            if ex is not None:
+                ex.exit_all_and_halt()
+                log_event(self.con, "HALT", "live", "EXIT ALL & HALT: orders cancelled, positions closed, live locked.")
+                return "all live positions closed; live locked"
+            log_event(self.con, "HALT", "live", "EXIT ALL & HALT pressed: live locked (no API key saved, nothing to close).")
             return "live locked"
         raise ValueError(cmd)
 
@@ -379,6 +389,24 @@ class Engine:
         self._uptime()
         return info
 
+    def _live_executor(self):
+        """An executor for emergency exits; works even when live is locked."""
+        from .. import cards
+        from ..exchanges.coindcx import CoinDCXPrivate
+        from ..execution.live import LiveExecutor
+        from ..secrets import get_secret
+        if getattr(self, "bridge", None) is not None:
+            return self.bridge.ex
+        key, sec = get_secret("coindcx_api_key"), get_secret("coindcx_api_secret")
+        if not key or not sec:
+            return None
+        cid = kv_get(self.con, "live_card_id", None)
+        card = next((c for c in cards.load_all(self.con) if c.card_id == cid), None) or next(iter(cards.load_all(self.con)), None)
+        if card is None:
+            return None
+        return LiveExecutor(self.con, self.cfg, card, CoinDCXPrivate(key, sec, api_base=self.cfg.exchange.api_base,
+                                                                     margin_currency=self.cfg.exchange.margin_currency))
+
     def _live(self) -> None:
         """Drive the live bridge only when the owner has armed live mode (all Section 17 gates)."""
         if not kv_get(self.con, "live_armed", False):
@@ -399,6 +427,9 @@ class Engine:
                 return
             self.bridge = LiveBridge(self.con, self.cfg, card, CoinDCXPrivate(key, sec, api_base=self.cfg.exchange.api_base,
                                      margin_currency=self.cfg.exchange.margin_currency), shadow)
+        if not self.bridge.card or kv_get(self.con, "live_card_id", None) != self.bridge.card.card_id:
+            self.bridge = None
+            return
         self.bridge.after_step()
         self.bridge.reconcile()
 

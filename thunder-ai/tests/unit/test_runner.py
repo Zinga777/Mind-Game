@@ -198,3 +198,26 @@ def test_restart_mid_run_is_idempotent(cfg):
         r2._close(int(F["open_time"][-1]) // 300_000, c, c, "end_of_data", int(F["open_time"][-1]) + 300_000)
     trades += r2.trades
     assert [round(t["net_pnl"], 9) for t in trades] == [round(t["net_pnl"], 9) for t in full.trades]
+
+
+def test_limit_fill_bar_cannot_book_the_target(cfg):
+    def ed(df):
+        c = df.loc[AT, "close"]
+        # fill bar: trades through the limit AND reaches the target -> order unknown, so no target exit
+        _set_bar(df, AT + 1, c * 1.001, c * 1.05, c * 0.998, c * 1.001)
+        for k in range(AT + 2, AT + 6):
+            _set_bar(df, k, c * 1.001, c * 1.002, c * 1.0, c * 1.001)
+    F, _ = frame(ed)
+    r = run(OneShot(AT, entry_type="limit"), F, unit_spec(), cfg0(cfg), 100_000, 0, AT + 6)
+    assert r.trades and r.trades[0]["exit_reason"] != "target"
+
+
+def test_marked_equity_includes_round_trip_fees(cfg):
+    F, _ = frame()
+    r = StrategyRunner(OneShot(AT), unit_spec(), cfg0(cfg), AccountState(starting_equity=100_000))
+    for i in range(0, AT + 2):
+        r.step(F, i)
+    assert r.pos is not None
+    c = float(F["close"][AT + 1])
+    raw = (c - r.pos.entry) * r.pos.qty
+    assert r._unrealised(c) < raw   # fees are deducted when marking for the kill-switch

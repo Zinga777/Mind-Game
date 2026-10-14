@@ -58,6 +58,7 @@ class Position:
     mae: float = 0.0          # price units, adverse
     mfe: float = 0.0
     pending_exit: bool = False
+    limit_entry: bool = False
     trace: dict = field(default_factory=dict)
 
 
@@ -152,7 +153,8 @@ class StrategyRunner:
         if p is None:
             return 0.0
         sgn = 1 if p.direction == "long" else -1
-        return (price - p.entry) * sgn * p.qty * self.unit - p.funding
+        fees = (p.fee_entry + price * p.f_out * p.qty * self.unit) * (1 + self.cfg.costs.gst)
+        return (price - p.entry) * sgn * p.qty * self.unit - p.funding - fees
 
     def _try_fill(self, F: Features, i: int, g: int, o: float, h: float, l: float) -> None:
         pe = self.pending
@@ -188,7 +190,8 @@ class StrategyRunner:
         self.pos = Position(pe.direction, filled_px, ref, pe.qty, pe.stop, pe.target, pe.stop, g,
                             int(F["open_time"][i]), pe.f_in, pe.f_out, slip_px * pe.qty * self.unit, fee_entry,
                             pe.planned_risk, pe.realised_risk, pe.regime, pe.score, pe.time_stop_bars,
-                            pe.breakeven_at_r, pe.strategy_id, trace=pe.trace)
+                            pe.breakeven_at_r, pe.strategy_id, limit_entry=pe.plan_entry_type != "market",
+                            trace=pe.trace)
         _ = risk_px
         self.pending = None
 
@@ -203,12 +206,17 @@ class StrategyRunner:
         # funding at 00/08/16 UTC within this bar (open_time < t <= close)
         ot = close_t - TIMEFRAME_MS["5m"]
         nxt = (ot // FUNDING_PERIOD_MS + 1) * FUNDING_PERIOD_MS
-        if ot < nxt <= close_t and g > p.entry_i:
+        if ot < nxt <= close_t:
             rate = float(F["funding_rate"][i]) if np.isfinite(F["funding_rate"][i]) else self.cfg.costs.funding_rate_per_interval
             p.funding += (1 if long else -1) * rate * o * p.qty * self.unit
         ss = self.slip.slip(p.stop, "stop", p.regime, atr)
         st = self.slip.slip(p.target, "market", p.regime, atr)
-        ex = bar_exit(p.direction, p.stop, p.target, o if g > p.entry_i else p.entry_ref, h, l, ss, st)
+        # On the bar a LIMIT entry fills we cannot know whether the high (low) came before the fill, so
+        # only the stop may trigger on that bar (pessimistic); the target can only hit from the next bar.
+        tgt = p.target
+        if g == p.entry_i and p.limit_entry:
+            tgt = float("inf") if long else float("-inf")
+        ex = bar_exit(p.direction, p.stop, tgt, o if g > p.entry_i else p.entry_ref, h, l, ss, st)
         # MAE / MFE (price units)
         adverse = (p.entry - l) if long else (h - p.entry)
         favour = (h - p.entry) if long else (p.entry - l)

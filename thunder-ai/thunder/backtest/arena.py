@@ -25,7 +25,7 @@ from .. import __version__, strategies
 from ..config.loader import config_hash
 from ..config.schema import Config
 from ..data import store
-from ..db import kv_set, log_event, now_ms
+from ..db import kv_get, kv_set, log_event, now_ms
 from ..exchanges.base import InstrumentSpec, default_spec
 from ..features import builder
 from ..risk.recovery_lab import run_lab
@@ -200,7 +200,7 @@ def run_arena(con: sqlite3.Connection, cfg: Config, pairs: Optional[list[str]] =
             "oos_expectancy_r": float(oos_r.mean()) if len(oos_r) else 0.0,
             "oos_pf": float(np.mean([r["oos"]["profit_factor"] for r in rs])),
             "oos_max_dd": float(max(r["oos"]["max_dd_pct"] for r in rs)),
-            "q_value": float(min(r["q_value"] for r in rs)) if all(r["oos"]["expectancy_r"] > 0 for r in rs) else float(max(r["q_value"] for r in rs)),
+            "q_value": float(max(r["q_value"] for r in rs)),
             "ci_low": metrics.bootstrap_ci(oos_r)[0] if len(oos_r) > 1 else float("nan"),
             "exp_cost15": _nanmean([r["exp_cost15"] for r in rs]),
             "exp_minus_best3": _nanmean([r["exp_minus_best3"] for r in rs]),
@@ -209,6 +209,12 @@ def run_arena(con: sqlite3.Connection, cfg: Config, pairs: Optional[list[str]] =
             "both_instruments": both,
         }
         v = promotion.evaluate(ev, cfg.gates)
+        contaminated = _test_reuse(con, sid, rs)
+        if contaminated and v.status not in (promotion.RESEARCH, promotion.CANDIDATE):
+            v.status = promotion.CANDIDATE
+        if contaminated:
+            v.plain = ("CONTAMINATED: a different version of this strategy was already scored on this same final-test "
+                       "data, so the test can no longer count as unseen. Fresh forward data is required. " + v.plain)
         lab = run_lab(oos_r, cfg.capital.starting_paper_equity_inr, cfg.risk.risk_pct,
                       n_paths=lab_paths) if len(oos_r) >= 10 else None
         ci = metrics.bootstrap_ci(oos_r) if len(oos_r) > 1 else (float("nan"), float("nan"))
@@ -221,7 +227,7 @@ def run_arena(con: sqlite3.Connection, cfg: Config, pairs: Optional[list[str]] =
             "walk_forward": {r["instrument"]: r["walk_forward"] for r in rs},
             "capital_scaling": {r["instrument"]: r["capital_scaling"] for r in rs},
             "validated_capital_range": best["validated_capital_range"],
-            "regime_breakdown": _regime_breakdown(all_tr),
+            "regime_breakdown": _regime_breakdown(all_tr), "contaminated": contaminated,
             "lab": {"table": lab.table, "recommendation": lab.recommendation, "b_allowed": lab.b_allowed,
                     "fan": lab.fan} if lab else None,
         }
@@ -296,3 +302,17 @@ _ = (default_spec,)
 def _nanmean(xs: list) -> float:
     a = np.array([x for x in xs if x is not None and np.isfinite(x)], dtype=float)
     return float(a.mean()) if len(a) else float("nan")
+
+
+def _test_reuse(con: sqlite3.Connection, sid: str, rs: list[dict]) -> bool:
+    """Log every touch of the final-test split. Re-running the SAME code+params on the same test data is
+    harmless (deterministic); scoring a DIFFERENT version on it means the test was used for tuning."""
+    from ..cards import code_hash
+    log = kv_get(con, "test_access_log", []) or []
+    ver = code_hash(sid) + ":" + json.dumps(rs[0]["params"], sort_keys=True)
+    tkey = "|".join(f"{r['instrument']}:{r['split_times']['test'][0]}-{r['split_times']['test'][1]}" for r in rs)
+    contaminated = any(e["sid"] == sid and e["test"] == tkey and e["ver"] != ver for e in log)
+    if not any(e["sid"] == sid and e["test"] == tkey and e["ver"] == ver for e in log):
+        log.append({"sid": sid, "test": tkey, "ver": ver, "ts": now_ms()})
+        kv_set(con, "test_access_log", log[-500:])
+    return contaminated
