@@ -3,13 +3,15 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from thunder import strategies
+from thunder.backtest import promotion
 from thunder.dashboard import components as ui
 from thunder.dashboard import formatters as fmt
 
 ui.page_setup("Arena")
 ui.ribbon("backtest")
 st.title("🏟️ Strategy Arena")
-st.caption("Ranked by net expectancy per trade (in R) on data the strategies were NOT tuned on — never by win rate "
+st.caption("Ranked by status, then by the cautious (lower) end of the net-expectancy confidence interval, on data the "
+           "strategies were NOT tuned on — never by win rate "
            "or gross profit. Edge is measured at research capital; the 'Capital needed' column shows what your "
            "account size can actually trade.")
 ui.command_feedback()
@@ -49,9 +51,12 @@ for sid, s in summary.items():
         "Profit factor": round(s["profit_factor"], 2), "Max DD": fmt.pct(s["max_dd"], sign=False),
         "Last 30d paper": (fmt.r_mult(paper.loc[sid, "r"]) + f" ({int(paper.loc[sid, 'n'])})") if not paper.empty and sid in paper.index else "—",
         "Regime fit": fit, "Capital needed": fmt.inr(need, 0) if need else "not feasible ≤ ₹5,00,000",
-        "_sort": s["expectancy_r"] if s["oos_trades"] >= 10 else -9,
+        # honest ranking: promotion status first, then the LOWER end of the 95% CI of net expectancy,
+        # so a lucky handful of trades can never outrank a large, consistent sample
+        "_status": promotion.LADDER.index(s["status"]),
+        "_ci_low": s["ci"][0] if s["ci"][0] == s["ci"][0] else -9.0,
     })
-df = pd.DataFrame(rows).sort_values("_sort", ascending=False).drop(columns="_sort")
+df = pd.DataFrame(rows).sort_values(["_status", "_ci_low"], ascending=False).drop(columns=["_status", "_ci_low"])
 df.insert(0, "Rank", range(1, len(df) + 1))
 status_f = st.multiselect("Filter by status", sorted(df["Status"].unique()), placeholder="All statuses")
 if status_f:

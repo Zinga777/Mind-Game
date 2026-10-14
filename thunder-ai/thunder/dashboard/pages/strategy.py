@@ -135,3 +135,14 @@ for c in [c for c in cards.load_all(ui.con()) if c.strategy_id == sid][:3]:
     d2.download_button("Printable page", cards.printable_html(c), f"{sid}-{c.card_id}.html", "text/html",
                        width="stretch", key=f"h{c.card_id}")
 _ = np
+
+with st.expander("Import a Strategy Card"):
+    up = st.file_uploader("Card JSON", type=["json"])
+    if up is not None:
+        try:
+            card = cards.import_json(up.getvalue().decode("utf-8"))
+            ok, why = cards.verify(card, ui.cfg())
+            cards.save(ui.con(), card)
+            (st.success if ok else st.warning)(f"Imported {card.strategy_id} {card.name} ({card.status}). Check: {why}")
+        except Exception as e:  # never show a stack trace to the owner
+            st.error(f"That file is not a valid THUNDER Strategy Card ({type(e).__name__}).")

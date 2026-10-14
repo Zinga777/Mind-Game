@@ -21,3 +21,10 @@
 - **Tax** figures are estimates only. Confirm the treatment of crypto futures with a chartered accountant.
 - **Keep-awake** is best-effort (Windows API call / macOS `caffeinate`); follow the Help page steps.
 - **Windows/macOS launchers** were written for those systems but only exercised on Linux during the build.
+- **Instrument discovery**: only the instruments listed in Settings are traded. The automatic liquidity filter
+  (min 24h volume, max spread) for adding further perpetuals is not implemented; add instruments by hand after
+  checking their liquidity.
+- **Remote (phone) viewing** is supported only through an SSH tunnel or private VPN (see `DEPLOY_VPS.md`). A
+  password-protected "Enable remote access" switch was deliberately not built, so live controls are never exposed.
+- **1-minute polling between candle closes** (to trigger stops earlier in paper mode) is not implemented; paper
+  stops are evaluated on each closed 5m candle with the pessimistic stop-first rule. Live stops are exchange-side.

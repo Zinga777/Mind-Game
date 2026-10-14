@@ -70,8 +70,11 @@ def evaluate(ev: dict, gates_cfg) -> Verdict:
          f"{ev.get('paper_days', 0):.0f} days, {ev.get('paper_trades', 0)} trades")
     addp("Paper net expectancy > 0", ev.get("paper_expectancy", 0) > 0, f"{ev.get('paper_expectancy', 0):+.3f}R")
     addp("Paper slippage/fills within 30% of backtest", ev.get("slippage_within", False), "compared to assumptions")
-    addp("Engine uptime >= 95%", ev.get("uptime", 0) >= 0.95, f"{ev.get('uptime', 0):.0%}")
-    addp("No unresolved reconciliation errors", ev.get("recon_errors", 1) == 0, f"{ev.get('recon_errors', 0)} open")
+    measured = "paper_trades" in ev
+    addp("Engine uptime >= 95%", measured and ev.get("uptime", 0) >= 0.95,
+         f"{ev.get('uptime', 0):.0%}" if measured else "not measured yet (needs forward paper trading)")
+    addp("No unresolved reconciliation errors", measured and ev.get("recon_errors", 1) == 0,
+         f"{ev.get('recon_errors', 0)} open" if measured else "not measured yet")
     g += p
     if status == CONFIRMED and all(x.passed for x in p):
         status = PAPER_PROVEN
