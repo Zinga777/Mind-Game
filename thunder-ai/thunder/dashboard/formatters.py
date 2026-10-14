@@ -38,6 +38,8 @@ def pct(x: float | None, decimals: int = 1, sign: bool = True) -> str:
     if x is None or (isinstance(x, float) and not math.isfinite(x)):
         return "—"
     v = x * 100
+    if round(v, decimals) == 0:
+        v = 0.0  # never print "-0%"
     if not sign:
         return f"{v:.{decimals}f}%"
     return f"{'+' if v > 0 else '−' if v < 0 else ''}{abs(v):.{decimals}f}%"

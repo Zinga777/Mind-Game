@@ -80,6 +80,74 @@ def simulate_path(r: np.ndarray, policy: str, equity0: float, risk_pct: float = 
             "recover_trades": float(np.mean(recover_times)) if recover_times else np.nan}
 
 
+def simulate_paths(paths: np.ndarray, policy: str, equity0: float, risk_pct: float = 0.005, dd_kill: float = 0.10,
+                   step: float = 0.25, cap: float = 1.5) -> dict:
+    """Vectorised over paths; same rules as simulate_path (tested to agree)."""
+    n, T = paths.shape
+    eq = np.full(n, equity0)
+    peak = eq.copy()
+    k = np.zeros(n, dtype=int)
+    streak = np.zeros(n, dtype=int)
+    longest = np.zeros(n, dtype=int)
+    killed = np.zeros(n, dtype=bool)
+    ruined = np.zeros(n, dtype=bool)
+    dead = np.zeros(n, dtype=bool)
+    cooldown = np.zeros(n, dtype=int)
+    hist = np.full((n, 30), np.nan)
+    hn = np.zeros(n, dtype=int)
+    dd_start = np.full(n, -1)
+    rec_sum = np.zeros(n)
+    rec_cnt = np.zeros(n)
+    for t in range(T):
+        x = paths[:, t]
+        active = ~dead & (cooldown == 0)
+        cooldown = np.where(~dead & (cooldown > 0), cooldown - 1, cooldown)
+        if policy == "A":
+            m = np.ones(n)
+        elif policy == "C":
+            m = np.where(k >= 3, 0.5, 1.0)
+        elif policy == "B":
+            cnt = np.minimum(hn, 30)
+            mean = np.where(cnt > 0, np.nansum(hist, axis=1) / np.maximum(cnt, 1), 0.0)
+            ok = (cnt >= 10) & (mean >= 0) & (eq >= 0.9 * peak)
+            m = np.where((k > 0) & ok, np.minimum(cap, 1 + step * k), 1.0)
+        else:
+            m = 2.0 ** k
+        risk = eq * risk_pct * m
+        if policy != "D":
+            risk = np.minimum(risk, eq * 0.01)
+        broke = active & (risk > eq)
+        ruined |= broke
+        eq = np.where(broke, 0.0, eq)
+        dead |= broke
+        go = active & ~broke
+        eq = np.where(go, eq + risk * x, eq)
+        hist[go, (hn[go] % 30)] = x[go]
+        hn = np.where(go, hn + 1, hn)
+        loss = go & (x < 0)
+        win = go & (x >= 0)
+        k = np.where(loss, k + 1, np.where(win, 0, k))
+        streak = np.where(loss, streak + 1, np.where(win, 0, streak))
+        longest = np.maximum(longest, streak)
+        if policy == "B":
+            cd = go & (k >= 4)
+            cooldown = np.where(cd, 1, cooldown)
+            k = np.where(cd, 0, k)
+        peak = np.where(go, np.maximum(peak, eq), peak)
+        dd = np.where(peak > 0, 1 - eq / peak, 1.0)
+        start = go & (dd >= 0.05) & (dd_start < 0)
+        dd_start = np.where(start, t, dd_start)
+        rec = go & (dd_start >= 0) & (eq >= peak)
+        rec_sum = np.where(rec, rec_sum + (t - dd_start), rec_sum)
+        rec_cnt = np.where(rec, rec_cnt + 1, rec_cnt)
+        dd_start = np.where(rec, -1, dd_start)
+        killed |= go & (dd >= dd_kill)
+        ruined |= go & (eq <= 0.5 * equity0)
+        dead |= eq <= 0
+    rec_avg = np.where(rec_cnt > 0, rec_sum / np.maximum(rec_cnt, 1), np.nan)
+    return {"end": eq, "killed": killed, "ruined": ruined, "longest": longest, "recover": rec_avg}
+
+
 @dataclass
 class LabResult:
     table: dict
@@ -99,17 +167,16 @@ def run_lab(r_oos: np.ndarray, equity0: float, risk_pct: float = 0.005, n_paths:
     paths = block_bootstrap(r_oos, n_paths, length, block, rng)
     table, fan = {}, {}
     for pol in POLICIES:
-        res = [simulate_path(p, pol, equity0, risk_pct) for p in paths]
-        ends = np.array([x["end"] for x in res])
+        res = simulate_paths(paths, pol, equity0, risk_pct)
+        ends = res["end"]
         table[pol] = {
             "name": NAMES[pol],
             "median_end": float(np.median(ends)),
             "p5_end": float(np.percentile(ends, 5)),
-            "p_kill": float(np.mean([x["killed"] for x in res])),
-            "p_ruin": float(np.mean([x["ruined"] for x in res])),
-            "longest_losing_median": float(np.median([x["longest_losing"] for x in res])),
-            "avg_recover_trades": float(np.nanmean([x["recover_trades"] for x in res])) if any(
-                np.isfinite(x["recover_trades"]) for x in res) else float("nan"),
+            "p_kill": float(res["killed"].mean()),
+            "p_ruin": float(res["ruined"].mean()),
+            "longest_losing_median": float(np.median(res["longest"])),
+            "avg_recover_trades": float(np.nanmean(res["recover"])) if np.isfinite(res["recover"]).any() else float("nan"),
         }
         fan[pol] = [float(np.percentile(ends, q)) for q in (5, 25, 50, 75, 95)]
     a, b = table["A"], table["B"]

@@ -307,7 +307,10 @@ class Engine:
             idx = [i for i, t in enumerate(F["open_time"]) if t >= first]
             for i in idx:
                 bar_close = int(F["open_time"][i]) + TF
-                fresh = not is_stale(int(F["open_time"][i]), "5m", now, self.cfg.risk.stale_multiple) and bar_close <= now
+                if self.demo and self._clock is None:
+                    fresh = True  # demo: revealing a bar IS time passing (virtual clock)
+                else:
+                    fresh = not is_stale(int(F["open_time"][i]), "5m", now, self.cfg.risk.stale_multiple) and bar_close <= now
                 for acc, r in rs.items():
                     was_halted = r.acct.halted
                     r.step(F, i, data_fresh=fresh)

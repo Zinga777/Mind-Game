@@ -1,0 +1,6 @@
+{"instrument": {"pair": "B-BTC_USDT", "margin_currency_short_name": "INR", "settle_currency_short_name": "USDT",
+ "quote_currency_short_name": "USDT", "position_currency_short_name": "BTC", "status": "active", "kind": "perpetual",
+ "max_leverage_long": "50", "max_leverage_short": "50", "price_increment": "0.1", "quantity_increment": "0.001",
+ "min_quantity": "0.001", "max_quantity": "100", "min_notional": "5", "maker_fee": "0.02", "taker_fee": "0.05",
+ "funding_frequency": "8", "order_types": ["market_order", "limit_order", "stop_market", "take_profit_market"],
+ "time_in_force_options": ["good_till_cancel", "immediate_or_cancel", "fill_or_kill"]}}
