@@ -72,7 +72,11 @@ def size_position(*, equity: float, budget: float, entry: float, stop: float,
     q_raw = budget / den
     q = floor_to_step(q_raw, spec.qty_step)
     if depth_limit_qty is not None:
-        q = min(q, floor_to_step(depth_limit_qty, spec.qty_step))
+        capped = floor_to_step(depth_limit_qty, spec.qty_step)
+        if q >= spec.min_qty and capped < spec.min_qty:
+            return SizeResult(False, capped, q_raw, budget, 0, 0, 0, 0,
+                              "impact guard: order too large for available depth/volume", min_eq)
+        q = min(q, capped)
     if q < spec.min_qty:
         return SizeResult(False, q, q_raw, budget, 0, 0, 0, 0,
                           f"UNDERCAPITALISED - needs >= {min_eq:.2f}", min_eq)

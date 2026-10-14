@@ -110,35 +110,41 @@ class StrategyRunner:
         self.candidates: list[dict] = []
         self.equity_curve: list[tuple[int, float]] = []
         self.last_gap_i = -10_000
-        self.last_i = -1
+        self.last_i = -1  # global bar number of the last processed bar
         self.unit = spec.contract_value * spec.quote_to_inr
 
     # -------------------------------------------------------------------------------
     def step(self, F: Features, i: int, data_fresh: bool = True) -> None:
-        if i <= self.last_i:
-            return  # idempotent: a bar is processed once
-        self.last_i = i
+        """Process local row i of F. State is keyed on the GLOBAL bar number (open_time // 5m) so
+        restarts and rolling feature windows never shift it."""
         ot = int(F["open_time"][i])
         tf = TIMEFRAME_MS["5m"]
+        g = ot // tf
+        if g <= self.last_i:
+            return  # idempotent: a bar is processed once
+        prev_g = self.last_i
+        self.last_i = g
         close_t = ot + tf
-        if i > 0 and int(F["open_time"][i]) - int(F["open_time"][i - 1]) != tf:
-            self.last_gap_i = i
+        if prev_g >= 0 and g - prev_g != 1:
+            self.last_gap_i = g
+        elif i > 0 and ot - int(F["open_time"][i - 1]) != tf:
+            self.last_gap_i = g
         self.acct.roll_day(ot)
         o, h, l, c = (float(F[k][i]) for k in ("open", "high", "low", "close"))
         # 1. fill pending entry
         if self.pending is not None:
-            self._try_fill(F, i, o, h, l)
+            self._try_fill(F, i, g, o, h, l)
         # 2. manage position
         if self.pos is not None:
-            self._manage(F, i, o, h, l, c, close_t)
+            self._manage(F, i, g, o, h, l, c, close_t)
         # 3. mark
         marked = self.acct.equity + self._unrealised(c)
         self.acct.mark(marked, self.cfg.risk.max_drawdown_pct)
         self.equity_curve.append((close_t, marked))
         # 4. look for new candidates
         if self.pos is None and self.pending is None and bool(F["warm"][i]):
-            fresh = data_fresh and (i - self.last_gap_i) > 50
-            self._decide(F, i, close_t, fresh)
+            fresh = data_fresh and (g - self.last_gap_i) > 50
+            self._decide(F, i, g, close_t, fresh)
 
     # -------------------------------------------------------------------------------
     def _unrealised(self, price: float) -> float:
@@ -148,7 +154,7 @@ class StrategyRunner:
         sgn = 1 if p.direction == "long" else -1
         return (price - p.entry) * sgn * p.qty * self.unit - p.funding
 
-    def _try_fill(self, F: Features, i: int, o: float, h: float, l: float) -> None:
+    def _try_fill(self, F: Features, i: int, g: int, o: float, h: float, l: float) -> None:
         pe = self.pending
         long = pe.direction == "long"
         filled_px = None
@@ -168,7 +174,7 @@ class StrategyRunner:
                 filled_px = ref = pe.ref
                 if (long and o < pe.ref) or (not long and o > pe.ref):
                     filled_px = ref = o  # opened through the limit: filled at the better open
-            elif i >= pe.expires_i:
+            elif g >= pe.expires_i:
                 self._log_cand_update(pe, "limit order not filled before expiry")
                 self.pending = None
                 return
@@ -179,30 +185,30 @@ class StrategyRunner:
             self.pending = None
             return
         fee_entry = filled_px * pe.f_in * pe.qty * self.unit
-        self.pos = Position(pe.direction, filled_px, ref, pe.qty, pe.stop, pe.target, pe.stop, i,
+        self.pos = Position(pe.direction, filled_px, ref, pe.qty, pe.stop, pe.target, pe.stop, g,
                             int(F["open_time"][i]), pe.f_in, pe.f_out, slip_px * pe.qty * self.unit, fee_entry,
                             pe.planned_risk, pe.realised_risk, pe.regime, pe.score, pe.time_stop_bars,
                             pe.breakeven_at_r, pe.strategy_id, trace=pe.trace)
         _ = risk_px
         self.pending = None
 
-    def _manage(self, F: Features, i: int, o: float, h: float, l: float, c: float, close_t: int) -> None:
+    def _manage(self, F: Features, i: int, g: int, o: float, h: float, l: float, c: float, close_t: int) -> None:
         p = self.pos
         long = p.direction == "long"
         atr = float(F["atr"][i]) if np.isfinite(F["atr"][i]) else 0.0
         if p.pending_exit:
             s = self.slip.slip(o, "market", p.regime, atr)
-            self._close(F, i, (o - s) if long else (o + s), o, "time_stop", close_t - TIMEFRAME_MS["5m"])
+            self._close(g, (o - s) if long else (o + s), o, "time_stop", close_t - TIMEFRAME_MS["5m"])
             return
         # funding at 00/08/16 UTC within this bar (open_time < t <= close)
         ot = close_t - TIMEFRAME_MS["5m"]
         nxt = (ot // FUNDING_PERIOD_MS + 1) * FUNDING_PERIOD_MS
-        if ot < nxt <= close_t and i > p.entry_i:
+        if ot < nxt <= close_t and g > p.entry_i:
             rate = float(F["funding_rate"][i]) if np.isfinite(F["funding_rate"][i]) else self.cfg.costs.funding_rate_per_interval
             p.funding += (1 if long else -1) * rate * o * p.qty * self.unit
         ss = self.slip.slip(p.stop, "stop", p.regime, atr)
         st = self.slip.slip(p.target, "market", p.regime, atr)
-        ex = bar_exit(p.direction, p.stop, p.target, o if i > p.entry_i else p.entry_ref, h, l, ss, st)
+        ex = bar_exit(p.direction, p.stop, p.target, o if g > p.entry_i else p.entry_ref, h, l, ss, st)
         # MAE / MFE (price units)
         adverse = (p.entry - l) if long else (h - p.entry)
         favour = (h - p.entry) if long else (p.entry - l)
@@ -214,7 +220,7 @@ class StrategyRunner:
                 ref = min(p.stop, o) if long else max(p.stop, o)
             if reason.startswith("stop") and p.stop != p.initial_stop:
                 reason = "breakeven_stop" if abs(p.stop - p.entry) < abs(p.initial_stop - p.entry) * 0.5 else reason
-            self._close(F, i, px, ref, reason, close_t)
+            self._close(g, px, ref, reason, close_t)
             return
         # break-even move after +X R (strategy-declared; stops only move toward profit)
         r_px = abs(p.entry - p.initial_stop)
@@ -224,10 +230,10 @@ class StrategyRunner:
                 be = p.entry + (2 * p.entry * p.f_out if long else -2 * p.entry * p.f_out)
                 if (long and be > p.stop) or (not long and be < p.stop):
                     p.stop = be
-        if i - p.entry_i + 1 >= p.time_stop_bars:
+        if g - p.entry_i + 1 >= p.time_stop_bars:
             p.pending_exit = True
 
-    def _close(self, F: Features, i: int, px: float, ref: float, reason: str, t: int) -> None:
+    def _close(self, g: int, px: float, ref: float, reason: str, t: int) -> None:
         p = self.pos
         long = p.direction == "long"
         sgn = 1 if long else -1
@@ -248,15 +254,15 @@ class StrategyRunner:
             "exit_reason": reason, "gross_pnl": gross, "fee_entry": p.fee_entry, "fee_exit": fee_exit, "gst": gst,
             "slippage": slippage, "funding": p.funding, "net_pnl": net, "r_multiple": r,
             "planned_risk": p.planned_risk, "realised_risk": p.realised_risk, "regime": p.regime, "score": p.score,
-            "mae_r": p.mae / r_px, "mfe_r": p.mfe / r_px, "bars_held": i - p.entry_i + 1,
-            "features": _snapshot(F, p.entry_i - 1), "trace": p.trace,
+            "mae_r": p.mae / r_px, "mfe_r": p.mfe / r_px, "bars_held": g - p.entry_i + 1,
+            "features": p.trace.get("features", {}), "trace": {k: v for k, v in p.trace.items() if k != "features"},
         }
         self.trades.append(tr)
         self.acct.apply_trade(net, r, p.regime, t)
         self.pos = None
 
     # -------------------------------------------------------------------------------
-    def _decide(self, F: Features, i: int, close_t: int, fresh: bool) -> None:
+    def _decide(self, F: Features, i: int, g: int, close_t: int, fresh: bool) -> None:
         cand = self.s.detect(F, i)
         if cand is None:
             return
@@ -304,7 +310,7 @@ class StrategyRunner:
                                     max_fraction_of_exchange_lev=cfg.risk.max_fraction_of_exchange_leverage,
                                     margin_free_fraction=cfg.risk.margin_free_fraction, risk_pct=cfg.risk.risk_pct,
                                     depth_limit_qty=vol_cap)
-        g = G.check(G.GuardInput(
+        gr = G.check(G.GuardInput(
             halted=acct.halted, data_fresh=fresh, daily_stop_hit=acct.daily_stop_hit(cfg.risk.daily_loss_stop_pct),
             open_positions=0, max_open_positions=cfg.risk.max_open_positions, size=size, entry=exp_entry,
             stop=plan.stop, leverage_for_liq=size.leverage if size.ok else 1.0, spec=self.spec,
@@ -313,20 +319,21 @@ class StrategyRunner:
             llm_verdict=llm_verdict, cooldown_active=close_t < acct.cooldown_until_ms,
             stop_to_liq_max_fraction=cfg.risk.stop_to_liq_max_fraction))
         rec.update({"planned_risk": size.planned_risk, "realised_risk": size.realised_risk, "qty": size.qty,
-                    "min_equity_needed": size.min_equity_needed, "guard": g.checks,
+                    "min_equity_needed": size.min_equity_needed, "guard": gr.checks,
                     "rr_net": plan.costs.rr_net, "cost_r": plan.costs.cost_r + plan.funding_cost_r,
                     "recovery": {"multiplier": rd.multiplier, "reason": rd.reason}})
-        if not g.ok:
-            rec["state"], rec["reason"] = RISK_REJECTED, g.reason
+        if not gr.ok:
+            rec["state"], rec["reason"] = RISK_REJECTED, gr.reason
             self._record(rec)
             return
         rec["state"] = QUALIFIED
         self._record(rec)
         trace = {k: rec[k] for k in ("score", "components", "reasons", "rr_net", "cost_r", "recovery", "regime")}
         trace["decision_id"] = uuid.uuid5(uuid.NAMESPACE_URL, f"{self.account_id}|{close_t}").hex[:12]
+        trace["features"] = _snapshot(F, i)
         self.pending = PendingEntry(cand.entry_type, cand.direction, plan.entry, plan.stop, plan.target,
                                     cand.max_entry_price, size.qty, size.planned_risk, size.realised_risk,
-                                    plan.f_in, plan.f_out, plan.slip_in, i + max(1, cand.expiry_bars),
+                                    plan.f_in, plan.f_out, plan.slip_in, g + max(1, cand.expiry_bars),
                                     cand.regime, desk.score, cand.time_stop_bars, cand.breakeven_at_r,
                                     cand.strategy_id, trace)
 
@@ -342,12 +349,14 @@ class StrategyRunner:
     def state_dict(self) -> dict:
         return {"pos": asdict(self.pos) if self.pos else None,
                 "pending": asdict(self.pending) if self.pending else None,
-                "last_i_time": None, "last_gap_i": self.last_gap_i, "account": self.acct.to_dict()}
+                "last_i": self.last_i, "last_gap_i": self.last_gap_i, "account": self.acct.to_dict(),
+                "trades_done": len(self.trades)}
 
     def load_state(self, d: dict) -> None:
         self.pos = Position(**d["pos"]) if d.get("pos") else None
         self.pending = PendingEntry(**d["pending"]) if d.get("pending") else None
         self.last_gap_i = d.get("last_gap_i", -10_000)
+        self.last_i = d.get("last_i", -1)
         self.acct = AccountState.from_dict(d["account"])
 
 
@@ -382,7 +391,8 @@ def run(strategy: Strategy, F: Features, spec: InstrumentSpec, cfg: Config, equi
     # close anything still open at the last close, marked as end-of-data
     if r.pos is not None and end > 0:
         c = float(F["close"][end - 1])
-        r._close(F, end - 1, c, c, "end_of_data", int(F["open_time"][end - 1]) + TIMEFRAME_MS["5m"])
+        g = int(F["open_time"][end - 1]) // TIMEFRAME_MS["5m"]
+        r._close(g, c, c, "end_of_data", int(F["open_time"][end - 1]) + TIMEFRAME_MS["5m"])
     return r
 
 

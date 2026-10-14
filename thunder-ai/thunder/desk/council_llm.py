@@ -132,6 +132,6 @@ class Council:
         return out
 
 
-def estimate_monthly_cost_usd(calls_per_day: int, model: str, in_tok: int = 3000, out_tok: int = 400) -> float:
+def estimate_monthly_cost_usd(calls_per_day: int, model: str, in_tok: int = 2500, out_tok: int = 400) -> float:
     pin, pout = PRICES.get(model, (4.0, 20.0))
     return calls_per_day * 30 * (in_tok / 1e6 * pin + out_tok / 1e6 * pout)

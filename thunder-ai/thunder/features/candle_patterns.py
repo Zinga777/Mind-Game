@@ -31,7 +31,11 @@ def detect(df: pd.DataFrame) -> pd.DataFrame:
     lo = np.minimum(o, c) - l
     bull = c > o
     bear = c < o
-    sh = lambda x, k=1: np.concatenate([np.full(k, np.nan), x[:-k]])
+
+    def sh(x, k=1):
+        x = np.asarray(x, dtype=float)
+        k = min(k, len(x))
+        return np.concatenate([np.full(k, np.nan), x[:len(x) - k]])
     po, pc, ph, pl = sh(o), sh(c), sh(h), sh(l)
     pbody = np.abs(pc - po)
     out = pd.DataFrame(index=df.index)

@@ -1,0 +1,15 @@
+[server]
+address = "127.0.0.1"   # localhost only (CoinDCX terms + safety). See docs/DEPLOY_VPS.md for remote viewing.
+port = 8501
+headless = true
+runOnSave = false
+
+[browser]
+gatherUsageStats = false
+serverAddress = "127.0.0.1"
+
+[theme]
+primaryColor = "#1d4ed8"
+
+[client]
+toolbarMode = "minimal"

@@ -1,0 +1,16 @@
+# Always-on server. See docs/DEPLOY_VPS.md. The dashboard is published ONLY on the server's
+# localhost; reach it through an SSH tunnel, never by opening the port to the internet.
+services:
+  engine:
+    build: .
+    command: ["python", "-m", "thunder.engine.main"]
+    volumes: ["./data:/app/data", "./config.yaml:/app/config.yaml"]
+    restart: unless-stopped
+    environment: [THUNDER_NO_KEYRING=1]
+  dashboard:
+    build: .
+    command: ["python", "-m", "streamlit", "run", "thunder/dashboard/app.py", "--server.address", "0.0.0.0", "--server.port", "8501", "--server.headless", "true"]
+    volumes: ["./data:/app/data", "./config.yaml:/app/config.yaml"]
+    ports: ["127.0.0.1:8501:8501"]
+    restart: unless-stopped
+    environment: [THUNDER_NO_KEYRING=1]

@@ -90,7 +90,8 @@ class MockCoinDCX:
         if path.endswith("/data/trades"):
             return _Resp(200, [{"price": self.price, "quantity": 1, "timestamp": 0, "is_maker": True}])
         if path.endswith("/time"):
-            return _Resp(200, {"server_time": 0})
+            import time
+            return _Resp(200, {"server_time": int(time.time() * 1000)})
         return _Resp(404, {"message": "not found"})
 
     # private --------------------------------------------------------------------
@@ -98,7 +99,7 @@ class MockCoinDCX:
         if any(w in path for w in ("withdraw", "transfer")):
             return _Resp(403, {"message": "forbidden in mock"})
         if path.endswith("/futures/wallets"):
-            return _Resp(200, [{"currency_short_name": "INR", "balance": "3000", "locked_balance": "0"}])
+            return _Resp(200, [{"currency_short_name": "INR", "balance": "2500.5", "locked_balance": "0"}])
         if path.endswith("/orders/create"):
             o = body["order"]
             self._oid += 1
