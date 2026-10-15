@@ -1,0 +1,11 @@
+[project]
+name = "thunder-ai"
+version = "1.0.0"
+description = "Honest strategy arena and locked live trader for CoinDCX futures"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+timeout = 600
+addopts = "-q"
+markers = ["slow: long-running soak / arena tests", "unproven: do not stub the recomputed card status"]
